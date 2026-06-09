@@ -34,7 +34,7 @@ func NewServer(cfg Config, st store.Store) *http.Server {
 	mux.HandleFunc("GET /api/v1/peers", pb.List)
 	mux.HandleFunc("POST /api/v1/peers", pb.Register)
 	mux.HandleFunc("GET /api/v1/peers/{id}", pb.Get)
-	mux.HandleFunc("GET /api/v1/peers/by-username/{username}", pb.GetByUsername)
+	mux.HandleFunc("GET /api/v1/keys/{login}", pb.GetByKey)
 	mux.HandleFunc("GET /api/v1/peers/best", pb.GetBestPeers)
 	mux.HandleFunc("DELETE /api/v1/peers/{id}", pb.Delete)
 	mux.HandleFunc("POST /api/v1/peers/{id}/heartbeat", pb.Heartbeat)

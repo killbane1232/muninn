@@ -44,14 +44,19 @@ func (h *Phonebook) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, peer)
 }
 
-func (h *Phonebook) GetByUsername(w http.ResponseWriter, r *http.Request) {
-	username := r.PathValue("username")
-	if username == "" {
-		writeError(w, http.StatusBadRequest, "username required")
+func (h *Phonebook) GetByKey(w http.ResponseWriter, r *http.Request) {
+	login := r.PathValue("login")
+	signature := r.URL.Query().Get("signature")
+	if login == "" {
+		writeError(w, http.StatusBadRequest, "login required")
+		return
+	}
+	if signature == "" {
+		writeError(w, http.StatusBadRequest, "signature required")
 		return
 	}
 
-	peer, err := h.Store.GetByUsername(r.Context(), username)
+	peer, err := h.Store.GetByKey(r.Context(), login, signature)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -178,7 +183,7 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, store.ErrInvalidPeer), errors.Is(err, store.ErrUsernameTaken), errors.Is(err, store.ErrInvalidChunk), errors.Is(err, store.ErrNoSigningKey):
+	case errors.Is(err, store.ErrInvalidPeer), errors.Is(err, store.ErrInvalidKey), errors.Is(err, store.ErrKeyTaken), errors.Is(err, store.ErrInvalidChunk), errors.Is(err, store.ErrNoSigningKey):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, store.ErrInvalidSignature):
 		writeError(w, http.StatusUnauthorized, err.Error())

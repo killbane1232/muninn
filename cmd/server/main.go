@@ -24,7 +24,23 @@ func main() {
 		}
 	}
 
-	st := store.NewMemory()
+	var st store.Store
+	driver := os.Getenv("MUNINN_STORE_DRIVER")
+	dsn := os.Getenv("MUNINN_STORE_DSN")
+
+	switch driver {
+	case "sqlite", "postgres", "clickhouse":
+		var err error
+		st, err = store.NewDB(driver, dsn)
+		if err != nil {
+			log.Fatalf("open %s store: %v", driver, err)
+		}
+		log.Printf("using %s store", driver)
+	default:
+		st = store.NewMemory()
+		log.Printf("using in-memory store")
+	}
+
 	srv := api.NewServer(cfg, st)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

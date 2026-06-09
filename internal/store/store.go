@@ -8,14 +8,14 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("peer not found")
-	ErrInvalidPeer     = errors.New("invalid peer data")
-	ErrAlreadyExists   = errors.New("peer already exists")
-	ErrUsernameTaken   = errors.New("username already taken")
-	ErrInvalidChunk    = errors.New("invalid chunk data")
-	ErrChunkNotFound     = errors.New("chunk hash not registered")
-	ErrInvalidSignature  = errors.New("invalid signature")
-	ErrNoSigningKey      = errors.New("peer has no signature key")
+	ErrNotFound           = errors.New("peer not found")
+	ErrInvalidPeer        = errors.New("invalid peer data")
+	ErrInvalidKey         = errors.New("invalid key")
+	ErrKeyTaken           = errors.New("login+signature pair already belongs to another peer")
+	ErrInvalidChunk       = errors.New("invalid chunk data")
+	ErrChunkNotFound      = errors.New("chunk hash not registered")
+	ErrInvalidSignature   = errors.New("invalid signature")
+	ErrNoSigningKey       = errors.New("peer has no signature key")
 )
 
 const (
@@ -28,7 +28,7 @@ const (
 type Store interface {
 	Upsert(ctx context.Context, req model.RegisterRequest) (model.Peer, error)
 	Get(ctx context.Context, id string) (model.Peer, error)
-	GetByUsername(ctx context.Context, username string) (model.Peer, error)
+	GetByKey(ctx context.Context, login string, signature string) (model.Peer, error)
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]model.Peer, error)
 	Heartbeat(ctx context.Context, id string, ttlSeconds int) (model.Peer, error)

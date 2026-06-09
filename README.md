@@ -1,6 +1,6 @@
 # Muninn — телефонная книга для P2P
 
-Централизованный **directory-сервер**: узлы регистрируют свои адреса, другие узлы запрашивают контакты по `id`. Записи истекают по TTL, если узел не шлёт heartbeat.
+Централизованный **directory-сервер**: узлы регистрируют свои адреса, другие узлы запрашивают контакты по `id` или по ключам (login+signature). Записи истекают по TTL, если узел не шлёт heartbeat.
 
 ## Запуск
 
@@ -23,7 +23,7 @@ go run ./cmd/server
 | `POST` | `/api/v1/peers` | Регистрация / обновление узла |
 | `GET` | `/api/v1/peers` | Список активных узлов |
 | `GET` | `/api/v1/peers/{id}` | Поиск узла по id |
-| `GET` | `/api/v1/peers/by-username/{username}` | Поиск узла по username |
+| `GET` | `/api/v1/keys/{login}?signature=` | Поиск узла по ключу (login + signature) |
 | `GET` | `/api/v1/peers/best?n=10` | N лучших пиров по quality_score |
 | `DELETE` | `/api/v1/peers/{id}` | Удаление записи |
 | `POST` | `/api/v1/peers/{id}/heartbeat` | Продление TTL |
@@ -37,7 +37,10 @@ curl -s -X POST http://localhost:8080/api/v1/peers \
   -H 'Content-Type: application/json' \
   -d '{
     "id": "node-alice",
-    "username": "alice",
+    "keys": [
+      {"login": "encrypted-alice-1", "signature": "sig-alice-1"},
+      {"login": "encrypted-alice-2", "signature": "sig-alice-2"}
+    ],
     "addresses": ["192.168.1.10:9000", "10.0.0.5:9000"],
     "public_key": "legacy-optional",
     "encryption_key": "base64-ed25519-or-x25519-pub",
@@ -47,10 +50,18 @@ curl -s -X POST http://localhost:8080/api/v1/peers \
   }'
 ```
 
+Каждый ключ — это пара `login` (зашифрованный идентификатор) + `signature` (подпись логина). Пара (login, signature) уникальна и не может принадлежать двум разным пирам.
+
 ### Поиск узла
 
+По id:
 ```bash
 curl -s http://localhost:8080/api/v1/peers/node-alice
+```
+
+По ключу (login + signature):
+```bash
+curl -s "http://localhost:8080/api/v1/keys/encrypted-alice-1?signature=sig-alice-1"
 ```
 
 ### Ключи узла
@@ -126,6 +137,7 @@ internal/handler/    — обработчики REST
 internal/model/      — модели данных
 internal/store/      — хранилище (in-memory)
 internal/sign/       — Ed25519, канонические payload для подписей
+internal/store/tests/ — тесты
 ```
 
 ## Тесты

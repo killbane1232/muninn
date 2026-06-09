@@ -2,9 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -14,23 +11,21 @@ import (
 	"github.com/killbane1232/muninn/internal/sign"
 )
 
-const usernameKeyLen = 12
-
 const defaultTTL = 300
 
 // MemoryStore — потокобезопасное in-memory хранилище.
 type MemoryStore struct {
-	mu        sync.RWMutex
-	peers     map[string]model.Peer
-	usernames map[string]string // username -> peer ID
-	chunks    map[string]string // fileID#index -> expected hash
+	mu      sync.RWMutex
+	peers   map[string]model.Peer
+	logins  map[string]map[string]string // login -> (signature -> peerID)
+	chunks  map[string]string            // fileID#index -> expected hash
 }
 
 func NewMemory() *MemoryStore {
 	return &MemoryStore{
-		peers:     make(map[string]model.Peer),
-		usernames: make(map[string]string),
-		chunks:    make(map[string]string),
+		peers:  make(map[string]model.Peer),
+		logins: make(map[string]map[string]string),
+		chunks: make(map[string]string),
 	}
 }
 
@@ -42,6 +37,14 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 	if len(req.Addresses) == 0 {
 		return model.Peer{}, ErrInvalidPeer
 	}
+	if len(req.Keys) == 0 {
+		return model.Peer{}, ErrInvalidPeer
+	}
+
+	keys := copyKeys(req.Keys)
+	if len(keys) == 0 {
+		return model.Peer{}, ErrInvalidKey
+	}
 
 	ttl := req.TTLSeconds
 	if ttl <= 0 {
@@ -51,6 +54,7 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 	now := time.Now().UTC()
 	peer := model.Peer{
 		ID:            id,
+		Keys:          keys,
 		Addresses:     copyStrings(req.Addresses),
 		PublicKey:     strings.TrimSpace(req.PublicKey),
 		EncryptionKey: strings.TrimSpace(req.EncryptionKey),
@@ -63,16 +67,8 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	username, err := s.resolveUsername(req)
-	if err != nil {
-		return model.Peer{}, err
-	}
-	peer.Username = username
-
 	if existing, ok := s.peers[id]; ok {
-		if existing.Username != username {
-			delete(s.usernames, existing.Username)
-		}
+		s.removePeerKeysLocked(existing.ID, existing.Keys)
 		peer.QualityScore = existing.QualityScore
 		peer.Quality = existing.Quality
 		if peer.EncryptionKey == "" {
@@ -82,14 +78,22 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 			peer.SignatureKey = existing.SignatureKey
 		}
 	} else {
-		if owner, taken := s.usernames[username]; taken && owner != id {
-			return model.Peer{}, ErrUsernameTaken
-		}
 		peer.QualityScore = InitialQualityScore
 	}
 
+	for _, k := range keys {
+		sigs, ok := s.logins[k.Login]
+		if ok {
+			if owner, exists := sigs[k.Signature]; exists && owner != id {
+				return model.Peer{}, ErrKeyTaken
+			}
+		} else {
+			s.logins[k.Login] = make(map[string]string)
+		}
+		s.logins[k.Login][k.Signature] = id
+	}
+
 	s.peers[id] = peer
-	s.usernames[username] = id
 	return peer, nil
 }
 
@@ -104,11 +108,21 @@ func (s *MemoryStore) Get(_ context.Context, id string) (model.Peer, error) {
 	return peer, nil
 }
 
-func (s *MemoryStore) GetByUsername(_ context.Context, username string) (model.Peer, error) {
+func (s *MemoryStore) GetByKey(_ context.Context, login string, signature string) (model.Peer, error) {
+	login = strings.TrimSpace(login)
+	signature = strings.TrimSpace(signature)
+	if login == "" || signature == "" {
+		return model.Peer{}, ErrInvalidKey
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	id, ok := s.usernames[username]
+	sigs, ok := s.logins[login]
+	if !ok {
+		return model.Peer{}, ErrNotFound
+	}
+	id, ok := sigs[signature]
 	if !ok {
 		return model.Peer{}, ErrNotFound
 	}
@@ -127,7 +141,7 @@ func (s *MemoryStore) Delete(_ context.Context, id string) error {
 	if !ok {
 		return ErrNotFound
 	}
-	delete(s.usernames, peer.Username)
+	s.removePeerKeysLocked(id, peer.Keys)
 	delete(s.peers, id)
 	return nil
 }
@@ -197,6 +211,7 @@ func (s *MemoryStore) PurgeExpired(_ context.Context) int {
 	removed := 0
 	for id, peer := range s.peers {
 		if s.isExpired(peer, now) {
+			s.removePeerKeysLocked(id, peer.Keys)
 			delete(s.peers, id)
 			removed++
 		}
@@ -210,6 +225,37 @@ func (s *MemoryStore) isExpired(peer model.Peer, now time.Time) bool {
 		ttl = defaultTTL
 	}
 	return now.Sub(peer.LastSeen) > time.Duration(ttl)*time.Second
+}
+
+func (s *MemoryStore) removePeerKeysLocked(peerID string, keys []model.Key) {
+	for _, k := range keys {
+		sigs, ok := s.logins[k.Login]
+		if ok {
+			delete(sigs, k.Signature)
+			if len(sigs) == 0 {
+				delete(s.logins, k.Login)
+			}
+		}
+	}
+}
+
+func copyKeys(in []model.Key) []model.Key {
+	out := make([]model.Key, 0, len(in))
+	seen := make(map[string]bool)
+	for _, k := range in {
+		login := strings.TrimSpace(k.Login)
+		sig := strings.TrimSpace(k.Signature)
+		if login == "" || sig == "" {
+			continue
+		}
+		key := login + "\x00" + sig
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, model.Key{Login: login, Signature: sig})
+	}
+	return out
 }
 
 func copyStrings(in []string) []string {
@@ -313,35 +359,15 @@ func copyMetadata(in map[string]string) map[string]string {
 	return out
 }
 
-func (s *MemoryStore) resolveUsername(req model.RegisterRequest) (string, error) {
-	if u := strings.TrimSpace(req.Username); u != "" {
-		return u, nil
+// SetPeerScore sets the quality score for a peer. Exported for testing.
+func (s *MemoryStore) SetPeerScore(id string, score int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.peers[id]
+	if !ok {
+		return ErrNotFound
 	}
-
-	key := strings.TrimSpace(req.SignatureKey)
-	if key == "" {
-		key = strings.TrimSpace(req.EncryptionKey)
-	}
-	if key == "" {
-		key = strings.TrimSpace(req.PublicKey)
-	}
-	if key == "" {
-		return "", ErrInvalidPeer
-	}
-
-	b64 := strings.TrimSpace(key)
-	decoded, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		decoded = []byte(b64)
-	}
-	h := sha256.Sum256(decoded)
-	username := fmt.Sprintf("%x", h[:usernameKeyLen/2])
-
-	if _, taken := s.usernames[username]; taken {
-		if _, exists := s.peers[req.ID]; !exists {
-			return "", ErrUsernameTaken
-		}
-	}
-
-	return username, nil
+	p.QualityScore = score
+	s.peers[id] = p
+	return nil
 }
