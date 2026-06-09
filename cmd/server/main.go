@@ -1,0 +1,67 @@
+package main
+
+import (
+	"context"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/killbane1232/muninn/internal/api"
+	"github.com/killbane1232/muninn/internal/store"
+)
+
+func main() {
+	cfg := api.DefaultConfig()
+	if v := os.Getenv("MUNINN_ADDR"); v != "" {
+		cfg.Addr = v
+	}
+	if v := os.Getenv("MUNINN_PURGE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.PurgeInterval = d
+		}
+	}
+
+	st := store.NewMemory()
+	srv := api.NewServer(cfg, st)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go runPurge(ctx, st, cfg.PurgeInterval)
+
+	go func() {
+		log.Printf("muninn phonebook listening on %s", cfg.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("shutting down...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("shutdown: %v", err)
+	}
+}
+
+func runPurge(ctx context.Context, st store.Store, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n := st.PurgeExpired(ctx)
+			if n > 0 {
+				log.Printf("purged %d expired peer(s)", n)
+			}
+		}
+	}
+}
