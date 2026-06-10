@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"log"
 
 	"github.com/killbane1232/muninn/internal/model"
 	"github.com/killbane1232/muninn/internal/store"
@@ -20,6 +21,7 @@ func (h *Phonebook) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
+	log.Printf("Registering %s", req.ID)
 
 	peer, err := h.Store.Upsert(r.Context(), req)
 	if err != nil {
@@ -173,6 +175,74 @@ func (h *Phonebook) ReportChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Phonebook) GetChunksByRecipient(w http.ResponseWriter, r *http.Request) {
+	recipientID := r.PathValue("recipient_id")
+	if recipientID == "" {
+		writeError(w, http.StatusBadRequest, "recipient_id required")
+		return
+	}
+
+	chunks, err := h.Store.GetChunksByRecipient(r.Context(), recipientID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if chunks == nil {
+		chunks = []model.ChunkRecord{}
+	}
+	writeJSON(w, http.StatusOK, chunks)
+}
+
+func (h *Phonebook) DeleteChunksByRecipient(w http.ResponseWriter, r *http.Request) {
+	recipientID := r.PathValue("recipient_id")
+	fileID := r.PathValue("file_id")
+	if recipientID == "" || fileID == "" {
+		writeError(w, http.StatusBadRequest, "recipient_id and file_id required")
+		return
+	}
+
+	if err := h.Store.DeleteChunksByRecipient(r.Context(), recipientID, fileID); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Phonebook) SetSignal(w http.ResponseWriter, r *http.Request) {
+	peerID := r.PathValue("id")
+	if peerID == "" {
+		writeError(w, http.StatusBadRequest, "peer id required")
+		return
+	}
+	var sig model.Signal
+	if err := json.NewDecoder(r.Body).Decode(&sig); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if err := h.Store.SetSignal(r.Context(), peerID, sig); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Phonebook) PollSignals(w http.ResponseWriter, r *http.Request) {
+	peerID := r.PathValue("id")
+	if peerID == "" {
+		writeError(w, http.StatusBadRequest, "peer id required")
+		return
+	}
+	sigs, err := h.Store.PollSignals(r.Context(), peerID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if sigs == nil {
+		sigs = []model.Signal{}
+	}
+	writeJSON(w, http.StatusOK, sigs)
 }
 
 func (h *Phonebook) Health(w http.ResponseWriter, _ *http.Request) {

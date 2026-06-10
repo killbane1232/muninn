@@ -8,9 +8,20 @@ type QualityStats struct {
 
 // RegisterChunkRequest — эталонный хэш чанка (манифест), подпись отправителя.
 type RegisterChunkRequest struct {
-	SenderID  string `json:"sender_id"`
-	Hash      string `json:"hash"`
-	Signature string `json:"signature"`
+	SenderID    string `json:"sender_id"`
+	RecipientID string `json:"recipient_id"`
+	Hash        string `json:"hash"`
+	Signature   string `json:"signature"`
+	PeerID      string `json:"peer_id"`
+}
+
+type ChunkRecord struct {
+	FileID      string `json:"file_id"`
+	ChunkIndex  int    `json:"chunk_index"`
+	SenderID    string `json:"sender_id"`
+	RecipientID string `json:"recipient_id"`
+	Hash        string `json:"hash"`
+	PeerID      string `json:"peer_id"`
 }
 
 // ChunkReportRequest — отчёт получателя о чанке от source peer.
@@ -29,4 +40,11 @@ type ChunkReportResult struct {
 	ReportedHash string `json:"reported_hash"`
 	Delta        int    `json:"delta"`
 	Peer         Peer   `json:"peer"`
+}
+
+// Signal — WebRTC signal для пира.
+type Signal struct {
+	From string `json:"from"`
+	Type string `json:"type"`
+	Data string `json:"data"`
 }

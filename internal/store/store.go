@@ -16,6 +16,7 @@ var (
 	ErrChunkNotFound      = errors.New("chunk hash not registered")
 	ErrInvalidSignature   = errors.New("invalid signature")
 	ErrNoSigningKey       = errors.New("peer has no signature key")
+	ErrNoPendingMessages  = errors.New("no pending messages for recipient")
 )
 
 const (
@@ -36,4 +37,9 @@ type Store interface {
 	SetChunkHash(ctx context.Context, fileID string, chunkIndex int, req model.RegisterChunkRequest) error
 	GetBestPeers(ctx context.Context, n int) ([]model.Peer, error)
 	ReportChunk(ctx context.Context, sourcePeerID string, req model.ChunkReportRequest) (model.ChunkReportResult, error)
+	GetChunksByRecipient(ctx context.Context, recipientID string) ([]model.ChunkRecord, error)
+	DeleteChunksByRecipient(ctx context.Context, recipientID string, fileID string) error
+
+	SetSignal(ctx context.Context, peerID string, sig model.Signal) error
+	PollSignals(ctx context.Context, peerID string) ([]model.Signal, error)
 }

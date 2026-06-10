@@ -51,12 +51,12 @@ func TestChunkQualityScoring(t *testing.T) {
 	}
 
 	const fileID = "file-abc"
-	const hash = "deadbeef"
+	const hash = "deadbeef01234567"
 
 	expectedMsg := sign.ExpectedPayload(fileID, 0, hash)
 	if err := s.SetChunkHash(ctx, fileID, 0, model.RegisterChunkRequest{
-		SenderID: "sender", Hash: "DEADbeef",
-		Signature: sign.Sign(senderKeys.priv, expectedMsg),
+		SenderID: "sender", RecipientID: "receiver", PeerID: "seeder-1",
+		Hash: "DEADbeef01234567", Signature: sign.Sign(senderKeys.priv, expectedMsg),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -74,9 +74,9 @@ func TestChunkQualityScoring(t *testing.T) {
 		t.Fatalf("peer after valid: %+v", ok.Peer)
 	}
 
-	badMsg := sign.ReportedPayload(fileID, 0, "badhash", "seeder-1")
+	badMsg := sign.ReportedPayload(fileID, 0, "ffffffffffffffff", "seeder-1")
 	bad, err := s.ReportChunk(ctx, "seeder-1", model.ChunkReportRequest{
-		ReporterID: "seeder-1", FileID: fileID, ChunkIndex: 0, Hash: "badhash",
+		ReporterID: "seeder-1", FileID: fileID, ChunkIndex: 0, Hash: "ffffffffffffffff",
 		Signature: sign.Sign(receiverKeys.priv, badMsg),
 	})
 	if err != nil || bad.Valid || bad.Delta != store.QualityPointsInvalid {
@@ -104,9 +104,9 @@ func TestReportChunkUnknown(t *testing.T) {
 		SignatureKey: receiverKeys.b64,
 	})
 
-	msg := sign.ReportedPayload("f", 0, "aa", "p")
+	msg := sign.ReportedPayload("f", 0, "aaaaaaaaaaaaaaaa", "p")
 	_, err := s.ReportChunk(ctx, "p", model.ChunkReportRequest{
-		ReporterID: "p", FileID: "f", ChunkIndex: 0, Hash: "aa",
+		ReporterID: "p", FileID: "f", ChunkIndex: 0, Hash: "aaaaaaaaaaaaaaaa",
 		Signature: sign.Sign(receiverKeys.priv, msg),
 	})
 	if err != store.ErrChunkNotFound {
@@ -126,7 +126,8 @@ func TestChunkInvalidSignature(t *testing.T) {
 	})
 
 	err := s.SetChunkHash(ctx, "f", 0, model.RegisterChunkRequest{
-		SenderID: "sender", Hash: "aa", Signature: "invalid",
+		SenderID: "sender", RecipientID: "receiver", PeerID: "p",
+		Hash: "aaaaaaaaaaaaaaaa", Signature: "invalid",
 	})
 	if err != store.ErrInvalidSignature {
 		t.Fatalf("got %v", err)

@@ -55,7 +55,16 @@ var dbInits = map[string]dbInit{
 				file_id TEXT NOT NULL,
 				chunk_index INTEGER NOT NULL,
 				expected_hash TEXT NOT NULL,
-				PRIMARY KEY (file_id, chunk_index)
+				sender_id TEXT NOT NULL DEFAULT '',
+				recipient_id TEXT NOT NULL DEFAULT '',
+				holder_peer_id TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE TABLE IF NOT EXISTS signals (
+				peer_id TEXT NOT NULL,
+				sig_from TEXT NOT NULL,
+				sig_type TEXT NOT NULL,
+				sig_data TEXT NOT NULL,
+				created_at INTEGER NOT NULL DEFAULT (unixepoch())
 			)`,
 		},
 	},
@@ -86,7 +95,16 @@ var dbInits = map[string]dbInit{
 				file_id TEXT NOT NULL,
 				chunk_index INTEGER NOT NULL,
 				expected_hash TEXT NOT NULL,
-				PRIMARY KEY (file_id, chunk_index)
+				sender_id TEXT NOT NULL DEFAULT '',
+				recipient_id TEXT NOT NULL DEFAULT '',
+				holder_peer_id TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE TABLE IF NOT EXISTS signals (
+				peer_id TEXT NOT NULL,
+				sig_from TEXT NOT NULL,
+				sig_type TEXT NOT NULL,
+				sig_data TEXT NOT NULL,
+				created_at BIGINT NOT NULL DEFAULT extract(epoch from now())
 			)`,
 		},
 	},
@@ -118,9 +136,20 @@ var dbInits = map[string]dbInit{
 			`CREATE TABLE IF NOT EXISTS chunks (
 				file_id String,
 				chunk_index Int32,
-				expected_hash String
+				expected_hash String,
+				sender_id String,
+				recipient_id String,
+				holder_peer_id String
 			) ENGINE = ReplacingMergeTree()
-			ORDER BY (file_id, chunk_index)`,
+			ORDER BY (file_id, chunk_index, holder_peer_id)`,
+			`CREATE TABLE IF NOT EXISTS signals (
+				peer_id String,
+				sig_from String,
+				sig_type String,
+				sig_data String,
+				created_at Int64
+			) ENGINE = ReplacingMergeTree(created_at)
+			ORDER BY (peer_id, created_at)`,
 		},
 	},
 }
@@ -614,8 +643,10 @@ func (s *dbStore) PurgeExpired(ctx context.Context) int {
 func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex int, req model.RegisterChunkRequest) error {
 	fileID = strings.TrimSpace(fileID)
 	senderID := strings.TrimSpace(req.SenderID)
+	recipientID := strings.TrimSpace(req.RecipientID)
+	peerID := strings.TrimSpace(req.PeerID)
 	hash := normalizeHash(req.Hash)
-	if fileID == "" || senderID == "" || hash == "" || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
+	if fileID == "" || senderID == "" || recipientID == "" || peerID == "" || hash == "" || !validHashFormat(hash) || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
 		return ErrInvalidChunk
 	}
 
@@ -629,20 +660,63 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 		return err
 	}
 
-	if s.isClickhouse() {
-		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO chunks (file_id, chunk_index, expected_hash) VALUES ($1, $2, $3)`,
-			fileID, chunkIndex, hash,
-		)
-	} else {
-		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO chunks (file_id, chunk_index, expected_hash) VALUES ($1, $2, $3)
-			 ON CONFLICT(file_id, chunk_index) DO UPDATE SET expected_hash = $3`,
-			fileID, chunkIndex, hash,
-		)
-	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO chunks (file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+		fileID, chunkIndex, hash, senderID, recipientID, peerID,
+	)
 	if err != nil {
 		return fmt.Errorf("set chunk hash: %w", err)
+	}
+	return nil
+}
+
+func (s *dbStore) GetChunksByRecipient(ctx context.Context, recipientID string) ([]model.ChunkRecord, error) {
+	recipientID = strings.TrimSpace(recipientID)
+	if recipientID == "" {
+		return nil, ErrInvalidChunk
+	}
+
+	query := `SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id FROM chunks WHERE recipient_id = $1`
+	if s.isClickhouse() {
+		query = `SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id FROM chunks FINAL WHERE recipient_id = $1`
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, recipientID)
+	if err != nil {
+		return nil, fmt.Errorf("get chunks by recipient: %w", err)
+	}
+	defer rows.Close()
+
+	var records []model.ChunkRecord
+	for rows.Next() {
+		var rec model.ChunkRecord
+		var peerID string
+		if err := rows.Scan(&rec.FileID, &rec.ChunkIndex, &rec.Hash, &rec.SenderID, &rec.RecipientID, &peerID); err != nil {
+			return nil, fmt.Errorf("scan chunk: %w", err)
+		}
+		rec.PeerID = peerID
+		records = append(records, rec)
+	}
+	if records == nil {
+		records = []model.ChunkRecord{}
+	}
+	return records, nil
+}
+
+func (s *dbStore) DeleteChunksByRecipient(ctx context.Context, recipientID string, fileID string) error {
+	recipientID = strings.TrimSpace(recipientID)
+	fileID = strings.TrimSpace(fileID)
+	if recipientID == "" || fileID == "" {
+		return ErrInvalidChunk
+	}
+
+	query := `DELETE FROM chunks WHERE recipient_id = $1 AND file_id = $2`
+	if s.isClickhouse() {
+		query = `ALTER TABLE chunks DELETE WHERE recipient_id = $1 AND file_id = $2`
+	}
+	_, err := s.db.ExecContext(ctx, query, recipientID, fileID)
+	if err != nil {
+		return fmt.Errorf("delete chunks by recipient: %w", err)
 	}
 	return nil
 }
@@ -653,7 +727,7 @@ func (s *dbStore) ReportChunk(ctx context.Context, sourcePeerID string, req mode
 	fileID := strings.TrimSpace(req.FileID)
 	reported := normalizeHash(req.Hash)
 
-	if sourcePeerID == "" || reporterID == "" || fileID == "" || reported == "" || req.ChunkIndex < 0 ||
+	if sourcePeerID == "" || reporterID == "" || fileID == "" || reported == "" || !validHashFormat(reported) || req.ChunkIndex < 0 ||
 		strings.TrimSpace(req.Signature) == "" {
 		return model.ChunkReportResult{}, ErrInvalidChunk
 	}
@@ -779,6 +853,60 @@ func (s *dbStore) SetPeerScore(id string, score int) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *dbStore) SetSignal(ctx context.Context, peerID string, sig model.Signal) error {
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" || sig.From == "" || sig.Type == "" {
+		return ErrInvalidChunk
+	}
+	if _, err := s.getPeerByID(ctx, peerID); err != nil {
+		return ErrNotFound
+	}
+	now := time.Now().UTC().Unix()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO signals (peer_id, sig_from, sig_type, sig_data, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		peerID, sig.From, sig.Type, sig.Data, now,
+	)
+	return err
+}
+
+func (s *dbStore) PollSignals(ctx context.Context, peerID string) ([]model.Signal, error) {
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return nil, ErrInvalidChunk
+	}
+
+	query := `SELECT sig_from, sig_type, sig_data FROM signals WHERE peer_id = $1`
+	if s.isClickhouse() {
+		query = `SELECT sig_from, sig_type, sig_data FROM signals FINAL WHERE peer_id = $1`
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, peerID)
+	if err != nil {
+		return nil, fmt.Errorf("query signals: %w", err)
+	}
+	defer rows.Close()
+
+	var sigs []model.Signal
+	for rows.Next() {
+		var sig model.Signal
+		if err := rows.Scan(&sig.From, &sig.Type, &sig.Data); err != nil {
+			return nil, fmt.Errorf("scan signal: %w", err)
+		}
+		sigs = append(sigs, sig)
+	}
+
+	if s.isClickhouse() {
+		s.db.ExecContext(ctx, `ALTER TABLE signals DELETE WHERE peer_id = $1`, peerID)
+	} else {
+		s.db.ExecContext(ctx, `DELETE FROM signals WHERE peer_id = $1`, peerID)
+	}
+
+	if sigs == nil {
+		return []model.Signal{}, nil
+	}
+	return sigs, nil
 }
 
 func (s *dbStore) Close() error {

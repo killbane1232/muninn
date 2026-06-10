@@ -6,7 +6,13 @@ import (
 
 	"github.com/killbane1232/muninn/internal/handler"
 	"github.com/killbane1232/muninn/internal/store"
+	"github.com/killbane1232/muninn/internal/webrtc"
 )
+
+type Server struct {
+	*http.Server
+	RTC *webrtc.Handler
+}
 
 type Config struct {
 	Addr            string
@@ -26,8 +32,9 @@ func DefaultConfig() Config {
 	}
 }
 
-func NewServer(cfg Config, st store.Store) *http.Server {
+func NewServer(cfg Config, st store.Store) *Server {
 	pb := &handler.Phonebook{Store: st}
+	rtc := webrtc.NewHandler(st)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", pb.Health)
@@ -40,11 +47,19 @@ func NewServer(cfg Config, st store.Store) *http.Server {
 	mux.HandleFunc("POST /api/v1/peers/{id}/heartbeat", pb.Heartbeat)
 	mux.HandleFunc("POST /api/v1/peers/{id}/chunk-reports", pb.ReportChunk)
 	mux.HandleFunc("PUT /api/v1/files/{file_id}/chunks/{index}", pb.RegisterChunk)
+	mux.HandleFunc("GET /api/v1/recipient/{recipient_id}/chunks", pb.GetChunksByRecipient)
+	mux.HandleFunc("DELETE /api/v1/recipient/{recipient_id}/chunks/{file_id}", pb.DeleteChunksByRecipient)
+	mux.HandleFunc("POST /api/v1/peers/{id}/signals", pb.SetSignal)
+	mux.HandleFunc("GET /api/v1/peers/{id}/signals", pb.PollSignals)
+	mux.HandleFunc("POST /api/v1/webrtc/bootstrap", rtc.Bootstrap)
 
-	return &http.Server{
-		Addr:         cfg.Addr,
-		Handler:      mux,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
+	return &Server{
+		Server: &http.Server{
+			Addr:         cfg.Addr,
+			Handler:      mux,
+			ReadTimeout:  cfg.ReadTimeout,
+			WriteTimeout: cfg.WriteTimeout,
+		},
+		RTC: rtc,
 	}
 }

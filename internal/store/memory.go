@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,17 +16,26 @@ const defaultTTL = 300
 
 // MemoryStore — потокобезопасное in-memory хранилище.
 type MemoryStore struct {
-	mu      sync.RWMutex
-	peers   map[string]model.Peer
-	logins  map[string]map[string]string // login -> (signature -> peerID)
-	chunks  map[string]string            // fileID#index -> expected hash
+	mu                sync.RWMutex
+	peers             map[string]model.Peer
+	logins            map[string]map[string]string
+	chunks            []chunkRecordEntry
+	signals           map[string][]model.Signal
+}
+
+type chunkRecordEntry struct {
+	key         string
+	Hash        string
+	SenderID    string
+	RecipientID string
+	PeerID      string
 }
 
 func NewMemory() *MemoryStore {
 	return &MemoryStore{
-		peers:  make(map[string]model.Peer),
-		logins: make(map[string]map[string]string),
-		chunks: make(map[string]string),
+		peers:   make(map[string]model.Peer),
+		logins:  make(map[string]map[string]string),
+		signals: make(map[string][]model.Signal),
 	}
 }
 
@@ -272,8 +282,10 @@ func copyStrings(in []string) []string {
 func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex int, req model.RegisterChunkRequest) error {
 	fileID = strings.TrimSpace(fileID)
 	senderID := strings.TrimSpace(req.SenderID)
+	recipientID := strings.TrimSpace(req.RecipientID)
+	peerID := strings.TrimSpace(req.PeerID)
 	hash := normalizeHash(req.Hash)
-	if fileID == "" || senderID == "" || hash == "" || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
+	if fileID == "" || senderID == "" || recipientID == "" || peerID == "" || hash == "" || !validHashFormat(hash) || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
 		return ErrInvalidChunk
 	}
 
@@ -289,7 +301,14 @@ func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex 
 		return err
 	}
 
-	s.chunks[chunkKey(fileID, chunkIndex)] = hash
+	key := chunkKey(fileID, chunkIndex)
+	s.chunks = append(s.chunks, chunkRecordEntry{
+		key:         key,
+		Hash:        hash,
+		SenderID:    senderID,
+		RecipientID: recipientID,
+		PeerID:      peerID,
+	})
 	return nil
 }
 
@@ -299,7 +318,7 @@ func (s *MemoryStore) ReportChunk(_ context.Context, sourcePeerID string, req mo
 	fileID := strings.TrimSpace(req.FileID)
 	reported := normalizeHash(req.Hash)
 
-	if sourcePeerID == "" || reporterID == "" || fileID == "" || reported == "" || req.ChunkIndex < 0 ||
+	if sourcePeerID == "" || reporterID == "" || fileID == "" || reported == "" || !validHashFormat(reported) || req.ChunkIndex < 0 ||
 		strings.TrimSpace(req.Signature) == "" {
 		return model.ChunkReportResult{}, ErrInvalidChunk
 	}
@@ -318,8 +337,14 @@ func (s *MemoryStore) ReportChunk(_ context.Context, sourcePeerID string, req mo
 		return model.ChunkReportResult{}, err
 	}
 
-	expected, ok := s.chunks[key]
-	if !ok {
+	var expected string
+	for _, entry := range s.chunks {
+		if entry.key == key {
+			expected = entry.Hash
+			break
+		}
+	}
+	if expected == "" {
 		return model.ChunkReportResult{}, ErrChunkNotFound
 	}
 
@@ -348,6 +373,69 @@ func (s *MemoryStore) ReportChunk(_ context.Context, sourcePeerID string, req mo
 	}, nil
 }
 
+func (s *MemoryStore) GetChunksByRecipient(_ context.Context, recipientID string) ([]model.ChunkRecord, error) {
+	recipientID = strings.TrimSpace(recipientID)
+	if recipientID == "" {
+		return nil, ErrInvalidChunk
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var records []model.ChunkRecord
+	for _, entry := range s.chunks {
+		if entry.RecipientID != recipientID {
+			continue
+		}
+		fileID, idx := parseChunkKey(entry.key)
+		records = append(records, model.ChunkRecord{
+			FileID:      fileID,
+			ChunkIndex:  idx,
+			SenderID:    entry.SenderID,
+			RecipientID: entry.RecipientID,
+			Hash:        entry.Hash,
+			PeerID:      entry.PeerID,
+		})
+	}
+	if records == nil {
+		records = []model.ChunkRecord{}
+	}
+	return records, nil
+}
+
+func (s *MemoryStore) DeleteChunksByRecipient(_ context.Context, recipientID string, fileID string) error {
+	recipientID = strings.TrimSpace(recipientID)
+	fileID = strings.TrimSpace(fileID)
+	if recipientID == "" || fileID == "" {
+		return ErrInvalidChunk
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var kept []chunkRecordEntry
+	for _, entry := range s.chunks {
+		if entry.RecipientID == recipientID {
+			fid, _ := parseChunkKey(entry.key)
+			if fid == fileID {
+				continue
+			}
+		}
+		kept = append(kept, entry)
+	}
+	s.chunks = kept
+	return nil
+}
+
+func parseChunkKey(key string) (string, int) {
+	parts := strings.SplitN(key, "#", 2)
+	if len(parts) != 2 {
+		return "", -1
+	}
+	idx, _ := strconv.Atoi(parts[1])
+	return parts[0], idx
+}
+
 func copyMetadata(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
@@ -357,6 +445,35 @@ func copyMetadata(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func (s *MemoryStore) SetSignal(_ context.Context, peerID string, sig model.Signal) error {
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" || sig.From == "" || sig.Type == "" {
+		return ErrInvalidChunk
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.peers[peerID]; !ok {
+		return ErrNotFound
+	}
+	s.signals[peerID] = append(s.signals[peerID], sig)
+	return nil
+}
+
+func (s *MemoryStore) PollSignals(_ context.Context, peerID string) ([]model.Signal, error) {
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return nil, ErrInvalidChunk
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sigs := s.signals[peerID]
+	delete(s.signals, peerID)
+	if sigs == nil {
+		return []model.Signal{}, nil
+	}
+	return sigs, nil
 }
 
 // SetPeerScore sets the quality score for a peer. Exported for testing.

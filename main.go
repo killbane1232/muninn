@@ -11,6 +11,7 @@ import (
 
 	"github.com/killbane1232/muninn/internal/api"
 	"github.com/killbane1232/muninn/internal/store"
+	_ "modernc.org/sqlite"
 )
 
 func main() {
@@ -57,6 +58,8 @@ func main() {
 
 	<-ctx.Done()
 	log.Println("shutting down...")
+
+	srv.RTC.CloseAll()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
