@@ -47,6 +47,7 @@ func NewServer(cfg Config, st store.Store) *Server {
 	mux.HandleFunc("POST /api/v1/peers/{id}/heartbeat", pb.Heartbeat)
 	mux.HandleFunc("POST /api/v1/peers/{id}/chunk-reports", pb.ReportChunk)
 	mux.HandleFunc("PUT /api/v1/files/{file_id}/chunks/{index}", pb.RegisterChunk)
+	mux.HandleFunc("POST /api/v1/files/{file_id}/chunks", pb.RegisterChunkBatch)
 	mux.HandleFunc("GET /api/v1/recipient/{recipient_id}/chunks", pb.GetChunksByRecipient)
 	mux.HandleFunc("DELETE /api/v1/recipient/{recipient_id}/chunks/{file_id}", pb.DeleteChunksByRecipient)
 	mux.HandleFunc("POST /api/v1/peers/{id}/signals", pb.SetSignal)

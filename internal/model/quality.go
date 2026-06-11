@@ -15,6 +15,19 @@ type RegisterChunkRequest struct {
 	PeerID      string `json:"peer_id"`
 }
 
+type RegisterChunkBatchEntry struct {
+	ChunkIndex  int    `json:"chunk_index"`
+	SenderID    string `json:"sender_id"`
+	RecipientID string `json:"recipient_id"`
+	Hash        string `json:"hash"`
+	Signature   string `json:"signature"`
+	PeerID      string `json:"peer_id"`
+}
+
+type RegisterChunkBatchRequest struct {
+	Chunks []RegisterChunkBatchEntry `json:"chunks"`
+}
+
 type ChunkRecord struct {
 	FileID      string `json:"file_id"`
 	ChunkIndex  int    `json:"chunk_index"`
