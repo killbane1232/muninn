@@ -172,6 +172,7 @@ func (h *Phonebook) RegisterChunkBatch(w http.ResponseWriter, r *http.Request) {
 			Hash:        entry.Hash,
 			Signature:   entry.Signature,
 			PeerID:      entry.PeerID,
+			Persist:     entry.Persist,
 		}
 		if err := h.Store.SetChunkHash(r.Context(), fileID, entry.ChunkIndex, chunkReq); err != nil {
 			writeStoreError(w, err)
@@ -202,6 +203,44 @@ func (h *Phonebook) ReportChunk(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (h *Phonebook) ConfirmChunk(w http.ResponseWriter, r *http.Request) {
+	var req model.ConfirmChunkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+
+	result, err := h.Store.ConfirmChunk(r.Context(), req)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Phonebook) ConfirmChunkBatch(w http.ResponseWriter, r *http.Request) {
+	var req model.ConfirmChunkBatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+
+	for _, entry := range req.Chunks {
+		chunkReq := model.ConfirmChunkRequest{
+			RecipientID: req.RecipientID,
+			FileID:      entry.FileID,
+			ChunkIndex:  entry.ChunkIndex,
+			Hash:        entry.Hash,
+			Signature:   entry.Signature,
+		}
+		if _, err := h.Store.ConfirmChunk(r.Context(), chunkReq); err != nil {
+			writeStoreError(w, err)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Phonebook) GetChunksByRecipient(w http.ResponseWriter, r *http.Request) {
 	recipientID := r.PathValue("recipient_id")
 	if recipientID == "" {
@@ -218,21 +257,6 @@ func (h *Phonebook) GetChunksByRecipient(w http.ResponseWriter, r *http.Request)
 		chunks = []model.ChunkRecord{}
 	}
 	writeJSON(w, http.StatusOK, chunks)
-}
-
-func (h *Phonebook) DeleteChunksByRecipient(w http.ResponseWriter, r *http.Request) {
-	recipientID := r.PathValue("recipient_id")
-	fileID := r.PathValue("file_id")
-	if recipientID == "" || fileID == "" {
-		writeError(w, http.StatusBadRequest, "recipient_id and file_id required")
-		return
-	}
-
-	if err := h.Store.DeleteChunksByRecipient(r.Context(), recipientID, fileID); err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Phonebook) SetSignal(w http.ResponseWriter, r *http.Request) {

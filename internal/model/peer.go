@@ -2,6 +2,15 @@ package model
 
 import "time"
 
+// PeerFlag — флаг пира, влияющий на приоритет (возведение в степень quality_score).
+type PeerFlag string
+
+const (
+	PeerFlagThin      PeerFlag = "thin"
+	PeerFlagThick     PeerFlag = "thick"
+	PeerFlagVeryThick PeerFlag = "very_thick"
+)
+
 // Key — зашифрованный логин с подписью для идентификации пира.
 type Key struct {
 	Login     string `json:"login"`
@@ -21,6 +30,7 @@ type Peer struct {
 	TTLSeconds    int               `json:"ttl_seconds"`
 	QualityScore  int               `json:"quality_score"`
 	Quality       QualityStats      `json:"quality"`
+	PeerFlag      PeerFlag          `json:"peer_flag,omitempty"`
 }
 
 // RegisterRequest — тело запроса на регистрацию или обновление узла.
@@ -33,4 +43,5 @@ type RegisterRequest struct {
 	SignatureKey  string            `json:"signature_key,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
 	TTLSeconds    int               `json:"ttl_seconds,omitempty"`
+	PeerFlag      PeerFlag          `json:"peer_flag,omitempty"`
 }

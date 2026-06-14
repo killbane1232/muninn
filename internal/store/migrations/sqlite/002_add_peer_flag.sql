@@ -1,0 +1,1 @@
+ALTER TABLE peers ADD COLUMN peer_flag TEXT NOT NULL DEFAULT '';

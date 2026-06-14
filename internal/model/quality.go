@@ -13,6 +13,7 @@ type RegisterChunkRequest struct {
 	Hash        string `json:"hash"`
 	Signature   string `json:"signature"`
 	PeerID      string `json:"peer_id"`
+	Persist     bool   `json:"persist"`
 }
 
 type RegisterChunkBatchEntry struct {
@@ -22,6 +23,7 @@ type RegisterChunkBatchEntry struct {
 	Hash        string `json:"hash"`
 	Signature   string `json:"signature"`
 	PeerID      string `json:"peer_id"`
+	Persist     bool   `json:"persist"`
 }
 
 type RegisterChunkBatchRequest struct {
@@ -35,6 +37,8 @@ type ChunkRecord struct {
 	RecipientID string `json:"recipient_id"`
 	Hash        string `json:"hash"`
 	PeerID      string `json:"peer_id"`
+	Persist     bool   `json:"persist"`
+	Confirmed   bool   `json:"confirmed"`
 }
 
 // ChunkReportRequest — отчёт получателя о чанке от source peer.
@@ -53,6 +57,36 @@ type ChunkReportResult struct {
 	ReportedHash string `json:"reported_hash"`
 	Delta        int    `json:"delta"`
 	Peer         Peer   `json:"peer"`
+}
+
+// ConfirmChunkRequest — подтверждение получения чанка получателем.
+type ConfirmChunkRequest struct {
+	RecipientID string `json:"recipient_id"`
+	FileID      string `json:"file_id"`
+	ChunkIndex  int    `json:"chunk_index"`
+	Hash        string `json:"hash"`
+	Signature   string `json:"signature"`
+}
+
+type ConfirmChunkBatchEntry struct {
+	FileID     string `json:"file_id"`
+	ChunkIndex int    `json:"chunk_index"`
+	Hash       string `json:"hash"`
+	Signature  string `json:"signature"`
+}
+
+type ConfirmChunkBatchRequest struct {
+	RecipientID string                   `json:"recipient_id"`
+	Chunks      []ConfirmChunkBatchEntry `json:"chunks"`
+}
+
+// ConfirmChunkResult — результат подтверждения и обновлённый узел.
+type ConfirmChunkResult struct {
+	Valid         bool   `json:"valid"`
+	ExpectedHash  string `json:"expected_hash"`
+	ConfirmedHash string `json:"confirmed_hash"`
+	Delta         int    `json:"delta"`
+	Peer          Peer   `json:"peer"`
 }
 
 // Signal — WebRTC signal для пира.

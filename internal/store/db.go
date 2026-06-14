@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,157 +15,33 @@ import (
 
 const driverSQLite = "sqlite"
 const driverPostgres = "postgres"
-const driverClickhouse = "clickhouse"
+
+var driverMap = map[string]string{
+	driverSQLite:  "sqlite",
+	driverPostgres: "pgx",
+}
+
+var defaultDSN = map[string]string{
+	driverSQLite:  "file:muninn.db?cache=shared&_journal_mode=WAL",
+	driverPostgres: "postgres://localhost:5432/muninn?sslmode=disable",
+}
 
 type dbStore struct {
 	db     *sql.DB
 	driver string
 }
 
-type dbInit struct {
-	driver    string
-	dsn       string
-	tableDDL  []string
-}
-
-var dbInits = map[string]dbInit{
-	driverSQLite: {
-		driver: "sqlite",
-		dsn:    "file:muninn.db?cache=shared&_journal_mode=WAL",
-		tableDDL: []string{
-			`CREATE TABLE IF NOT EXISTS peers (
-				id TEXT PRIMARY KEY,
-				addresses TEXT NOT NULL,
-				public_key TEXT NOT NULL DEFAULT '',
-				encryption_key TEXT NOT NULL DEFAULT '',
-				signature_key TEXT NOT NULL DEFAULT '',
-				metadata TEXT NOT NULL DEFAULT '{}',
-				last_seen INTEGER NOT NULL,
-				ttl_seconds INTEGER NOT NULL DEFAULT 300,
-				quality_score INTEGER NOT NULL DEFAULT 1000,
-				quality_valid INTEGER NOT NULL DEFAULT 0,
-				quality_invalid INTEGER NOT NULL DEFAULT 0
-			)`,
-			`CREATE TABLE IF NOT EXISTS peer_keys (
-				login TEXT NOT NULL,
-				signature TEXT NOT NULL,
-				peer_id TEXT NOT NULL REFERENCES peers(id) ON DELETE CASCADE,
-				PRIMARY KEY (login, signature)
-			)`,
-			`CREATE TABLE IF NOT EXISTS chunks (
-				file_id TEXT NOT NULL,
-				chunk_index INTEGER NOT NULL,
-				expected_hash TEXT NOT NULL,
-				sender_id TEXT NOT NULL DEFAULT '',
-				recipient_id TEXT NOT NULL DEFAULT '',
-				holder_peer_id TEXT NOT NULL DEFAULT ''
-			)`,
-			`CREATE TABLE IF NOT EXISTS signals (
-				peer_id TEXT NOT NULL,
-				sig_from TEXT NOT NULL,
-				sig_type TEXT NOT NULL,
-				sig_data TEXT NOT NULL,
-				created_at INTEGER NOT NULL DEFAULT (unixepoch())
-			)`,
-		},
-	},
-	driverPostgres: {
-		driver: "pgx",
-		dsn:    "postgres://localhost:5432/muninn?sslmode=disable",
-		tableDDL: []string{
-			`CREATE TABLE IF NOT EXISTS peers (
-				id TEXT PRIMARY KEY,
-				addresses TEXT NOT NULL,
-				public_key TEXT NOT NULL DEFAULT '',
-				encryption_key TEXT NOT NULL DEFAULT '',
-				signature_key TEXT NOT NULL DEFAULT '',
-				metadata TEXT NOT NULL DEFAULT '{}',
-				last_seen BIGINT NOT NULL,
-				ttl_seconds INTEGER NOT NULL DEFAULT 300,
-				quality_score INTEGER NOT NULL DEFAULT 1000,
-				quality_valid INTEGER NOT NULL DEFAULT 0,
-				quality_invalid INTEGER NOT NULL DEFAULT 0
-			)`,
-			`CREATE TABLE IF NOT EXISTS peer_keys (
-				login TEXT NOT NULL,
-				signature TEXT NOT NULL,
-				peer_id TEXT NOT NULL REFERENCES peers(id) ON DELETE CASCADE,
-				PRIMARY KEY (login, signature)
-			)`,
-			`CREATE TABLE IF NOT EXISTS chunks (
-				file_id TEXT NOT NULL,
-				chunk_index INTEGER NOT NULL,
-				expected_hash TEXT NOT NULL,
-				sender_id TEXT NOT NULL DEFAULT '',
-				recipient_id TEXT NOT NULL DEFAULT '',
-				holder_peer_id TEXT NOT NULL DEFAULT ''
-			)`,
-			`CREATE TABLE IF NOT EXISTS signals (
-				peer_id TEXT NOT NULL,
-				sig_from TEXT NOT NULL,
-				sig_type TEXT NOT NULL,
-				sig_data TEXT NOT NULL,
-				created_at BIGINT NOT NULL DEFAULT extract(epoch from now())
-			)`,
-		},
-	},
-	driverClickhouse: {
-		driver: "clickhouse",
-		dsn:    "clickhouse://localhost:9000/muninn?dial_timeout=5s",
-		tableDDL: []string{
-			`CREATE TABLE IF NOT EXISTS peers (
-				id String,
-				addresses String,
-				public_key String,
-				encryption_key String,
-				signature_key String,
-				metadata String,
-				last_seen Int64,
-				ttl_seconds Int32,
-				quality_score Int32,
-				quality_valid Int32,
-				quality_invalid Int32
-			) ENGINE = ReplacingMergeTree(last_seen)
-			ORDER BY id`,
-			`CREATE TABLE IF NOT EXISTS peer_keys (
-				login String,
-				signature String,
-				peer_id String,
-				last_seen Int64
-			) ENGINE = ReplacingMergeTree(last_seen)
-			ORDER BY (login, signature)`,
-			`CREATE TABLE IF NOT EXISTS chunks (
-				file_id String,
-				chunk_index Int32,
-				expected_hash String,
-				sender_id String,
-				recipient_id String,
-				holder_peer_id String
-			) ENGINE = ReplacingMergeTree()
-			ORDER BY (file_id, chunk_index, holder_peer_id)`,
-			`CREATE TABLE IF NOT EXISTS signals (
-				peer_id String,
-				sig_from String,
-				sig_type String,
-				sig_data String,
-				created_at Int64
-			) ENGINE = ReplacingMergeTree(created_at)
-			ORDER BY (peer_id, created_at)`,
-		},
-	},
-}
-
 func NewDB(driver, dsn string) (Store, error) {
-	init, ok := dbInits[driver]
+	sqlDriver, ok := driverMap[driver]
 	if !ok {
 		return nil, fmt.Errorf("unsupported driver: %s", driver)
 	}
 
-	if dsn != "" {
-		init.dsn = dsn
+	if dsn == "" {
+		dsn = defaultDSN[driver]
 	}
 
-	db, err := sql.Open(init.driver, init.dsn)
+	db, err := sql.Open(sqlDriver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", driver, err)
 	}
@@ -173,19 +50,11 @@ func NewDB(driver, dsn string) (Store, error) {
 		return nil, fmt.Errorf("ping %s: %w", driver, err)
 	}
 
-	s := &dbStore{db: db, driver: driver}
-
-	for _, ddl := range init.tableDDL {
-		if _, err := db.Exec(ddl); err != nil {
-			return nil, fmt.Errorf("create table %s: %w", driver, err)
-		}
+	if err := runMigrations(db, sqlDriver); err != nil {
+		return nil, fmt.Errorf("migrations %s: %w", driver, err)
 	}
 
-	return s, nil
-}
-
-func (s *dbStore) isClickhouse() bool {
-	return s.driver == driverClickhouse
+	return &dbStore{db: db, driver: driver}, nil
 }
 
 func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.Peer, error) {
@@ -212,10 +81,6 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 
 	now := time.Now().UTC()
 	nowUnix := now.Unix()
-
-	if s.isClickhouse() {
-		return s.upsertCH(ctx, id, keys, req, ttl, now, nowUnix)
-	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -248,13 +113,15 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 		sigKey = existingSigKey
 	}
 
+	peerFlag := string(req.PeerFlag)
+
 	if isNew {
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO peers (id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			`INSERT INTO peers (id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			id, jsonString(req.Addresses), strings.TrimSpace(req.PublicKey),
 			encKey, sigKey, jsonString(req.Metadata), nowUnix, ttl,
-			InitialQualityScore, 0, 0,
+			InitialQualityScore, 0, 0, peerFlag,
 		)
 	} else {
 		_, err = tx.ExecContext(ctx,
@@ -265,11 +132,12 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 				signature_key = CASE WHEN $4 = '' THEN signature_key ELSE $4 END,
 				metadata = $5,
 				last_seen = $6,
-				ttl_seconds = $7
+				ttl_seconds = $7,
+				peer_flag = CASE WHEN $9 = '' THEN peer_flag ELSE $9 END
 			 WHERE id = $8`,
 			jsonString(req.Addresses), strings.TrimSpace(req.PublicKey),
 			strings.TrimSpace(req.EncryptionKey), strings.TrimSpace(req.SignatureKey),
-			jsonString(req.Metadata), nowUnix, ttl, id,
+			jsonString(req.Metadata), nowUnix, ttl, id, peerFlag,
 		)
 	}
 	if err != nil {
@@ -297,74 +165,6 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 	return s.getPeerByID(ctx, id)
 }
 
-func (s *dbStore) upsertCH(ctx context.Context, id string, keys []model.Key, req model.RegisterRequest, ttl int, now time.Time, nowUnix int64) (model.Peer, error) {
-	existing, err := s.getPeerByID(ctx, id)
-	isNew := false
-	if err == ErrNotFound {
-		isNew = true
-	} else if err != nil {
-		return model.Peer{}, err
-	}
-
-	encKey := strings.TrimSpace(req.EncryptionKey)
-	sigKey := strings.TrimSpace(req.SignatureKey)
-	qualityScore := InitialQualityScore
-	qValid := 0
-	qInvalid := 0
-
-	if !isNew {
-		qualityScore = existing.QualityScore
-		qValid = existing.Quality.ValidReports
-		qInvalid = existing.Quality.InvalidReports
-		if encKey == "" {
-			encKey = existing.EncryptionKey
-		}
-		if sigKey == "" {
-			sigKey = existing.SignatureKey
-		}
-		for _, k := range existing.Keys {
-			if _, err := s.db.ExecContext(ctx,
-				`ALTER TABLE peer_keys DELETE WHERE login = $1 AND signature = $2`,
-				k.Login, k.Signature,
-			); err != nil {
-				return model.Peer{}, fmt.Errorf("delete key: %w", err)
-			}
-		}
-	} else {
-		for _, k := range keys {
-			var count int
-			s.db.QueryRowContext(ctx,
-				`SELECT count() FROM peer_keys WHERE login = $1 AND signature = $2`,
-				k.Login, k.Signature,
-			).Scan(&count)
-			if count > 0 {
-				return model.Peer{}, ErrKeyTaken
-			}
-		}
-	}
-
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO peers (id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		id, jsonString(req.Addresses), strings.TrimSpace(req.PublicKey),
-		encKey, sigKey, jsonString(req.Metadata), nowUnix, ttl,
-		qualityScore, qValid, qInvalid,
-	); err != nil {
-		return model.Peer{}, fmt.Errorf("insert peer: %w", err)
-	}
-
-	for _, k := range keys {
-		if _, err := s.db.ExecContext(ctx,
-			`INSERT INTO peer_keys (login, signature, peer_id, last_seen) VALUES ($1, $2, $3, $4)`,
-			k.Login, k.Signature, id, nowUnix,
-		); err != nil {
-			return model.Peer{}, fmt.Errorf("insert key: %w", err)
-		}
-	}
-
-	return s.getPeerByID(ctx, id)
-}
-
 func (s *dbStore) Get(ctx context.Context, id string) (model.Peer, error) {
 	return s.getPeerByID(ctx, strings.TrimSpace(id))
 }
@@ -378,17 +178,16 @@ func (s *dbStore) getPeerByID(ctx context.Context, id string) (model.Peer, error
 	var addressesJSON, metadataJSON string
 	var lastSeenUnix int64
 	var qValid, qInvalid int
+	var peerFlag string
 
-	query := `SELECT id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid FROM peers WHERE id = $1`
-	if s.isClickhouse() {
-		query = `SELECT id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid FROM peers FINAL WHERE id = $1`
-	}
-
-	err := s.db.QueryRowContext(ctx, query, id).Scan(
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag FROM peers WHERE id = $1`, id,
+	).Scan(
 		&peer.ID, &addressesJSON, &peer.PublicKey, &peer.EncryptionKey,
 		&peer.SignatureKey, &metadataJSON, &lastSeenUnix, &peer.TTLSeconds,
-		&peer.QualityScore, &qValid, &qInvalid,
+		&peer.QualityScore, &qValid, &qInvalid, &peerFlag,
 	)
+	peer.PeerFlag = model.PeerFlag(peerFlag)
 	if err == sql.ErrNoRows {
 		return model.Peer{}, ErrNotFound
 	}
@@ -418,12 +217,9 @@ func (s *dbStore) getPeerByID(ctx context.Context, id string) (model.Peer, error
 }
 
 func (s *dbStore) getPeerKeys(ctx context.Context, peerID string) []model.Key {
-	query := `SELECT login, signature FROM peer_keys WHERE peer_id = $1`
-	if s.isClickhouse() {
-		query = `SELECT login, signature FROM peer_keys FINAL WHERE peer_id = $1`
-	}
-
-	rows, err := s.db.QueryContext(ctx, query, peerID)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT login, signature FROM peer_keys WHERE peer_id = $1`, peerID,
+	)
 	if err != nil {
 		return nil
 	}
@@ -447,12 +243,9 @@ func (s *dbStore) GetByKey(ctx context.Context, login, signature string) (model.
 	}
 
 	var peerID string
-	query := `SELECT peer_id FROM peer_keys WHERE login = $1 AND signature = $2`
-	if s.isClickhouse() {
-		query = `SELECT peer_id FROM peer_keys FINAL WHERE login = $1 AND signature = $2`
-	}
-
-	err := s.db.QueryRowContext(ctx, query, login, signature).Scan(&peerID)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT peer_id FROM peer_keys WHERE login = $1 AND signature = $2`, login, signature,
+	).Scan(&peerID)
 	if err == sql.ErrNoRows {
 		return model.Peer{}, ErrNotFound
 	}
@@ -467,19 +260,6 @@ func (s *dbStore) Delete(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return ErrInvalidPeer
-	}
-
-	if s.isClickhouse() {
-		result, err := s.db.ExecContext(ctx, `ALTER TABLE peer_keys DELETE WHERE peer_id = $1`, id)
-		if err != nil {
-			return fmt.Errorf("delete keys: %w", err)
-		}
-		_, err = s.db.ExecContext(ctx, `ALTER TABLE peers DELETE WHERE id = $1`, id)
-		if err != nil {
-			return fmt.Errorf("delete peer: %w", err)
-		}
-		_ = result
-		return nil
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -502,12 +282,7 @@ func (s *dbStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *dbStore) List(ctx context.Context) ([]model.Peer, error) {
-	query := `SELECT id FROM peers`
-	if s.isClickhouse() {
-		query = `SELECT id FROM peers FINAL`
-	}
-
-	rows, err := s.db.QueryContext(ctx, query)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM peers`)
 	if err != nil {
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
@@ -539,27 +314,6 @@ func (s *dbStore) Heartbeat(ctx context.Context, id string, ttlSeconds int) (mod
 
 	nowUnix := time.Now().UTC().Unix()
 
-	if s.isClickhouse() {
-		existing, err := s.getPeerByID(ctx, id)
-		if err != nil {
-			return model.Peer{}, err
-		}
-		ttl := existing.TTLSeconds
-		if ttlSeconds > 0 {
-			ttl = ttlSeconds
-		}
-		if _, err := s.db.ExecContext(ctx,
-			`INSERT INTO peers (id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-			id, jsonString(existing.Addresses), existing.PublicKey,
-			existing.EncryptionKey, existing.SignatureKey, jsonString(existing.Metadata),
-			nowUnix, ttl, existing.QualityScore, existing.Quality.ValidReports, existing.Quality.InvalidReports,
-		); err != nil {
-			return model.Peer{}, fmt.Errorf("heartbeat insert: %w", err)
-		}
-		return s.getPeerByID(ctx, id)
-	}
-
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE peers SET last_seen = $1, ttl_seconds = CASE WHEN $2 > 0 THEN $2 ELSE ttl_seconds END WHERE id = $3`,
 		nowUnix, ttlSeconds, id,
@@ -579,56 +333,52 @@ func (s *dbStore) GetBestPeers(ctx context.Context, n int) ([]model.Peer, error)
 		return []model.Peer{}, nil
 	}
 
-	query := `SELECT id FROM peers ORDER BY quality_score DESC`
-	if s.isClickhouse() {
-		query = `SELECT id FROM peers FINAL ORDER BY quality_score DESC`
-	}
-
-	rows, err := s.db.QueryContext(ctx, query)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, quality_score, peer_flag FROM peers`,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("get best peers: %w", err)
 	}
 	defer rows.Close()
 
 	now := time.Now().UTC()
-	var out []model.Peer
+	type scoredPeer struct {
+		peer  model.Peer
+		score int
+	}
+	var candidates []scoredPeer
+
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var id, flag string
+		var qualityScore int
+		if err := rows.Scan(&id, &qualityScore, &flag); err != nil {
 			continue
 		}
 		peer, err := s.getPeerByID(ctx, id)
-		if err == nil && !s.isExpired(peer, now) {
-			out = append(out, peer)
-			if len(out) >= n {
-				break
-			}
+		if err != nil || s.isExpired(peer, now) {
+			continue
 		}
+		peer.PeerFlag = model.PeerFlag(flag)
+		effective := EffectiveScore(peer)
+		candidates = append(candidates, scoredPeer{peer: peer, score: effective})
 	}
-	if out == nil {
-		out = []model.Peer{}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	if n > len(candidates) {
+		n = len(candidates)
+	}
+	out := make([]model.Peer, n)
+	for i := 0; i < n; i++ {
+		out[i] = candidates[i].peer
 	}
 	return out, nil
 }
 
 func (s *dbStore) PurgeExpired(ctx context.Context) int {
 	now := time.Now().UTC()
-
-	if s.isClickhouse() {
-		cutoff := now.Unix()
-		result, err := s.db.ExecContext(ctx,
-			`ALTER TABLE peers DELETE WHERE last_seen + ttl_seconds < $1`, cutoff,
-		)
-		if err != nil {
-			return 0
-		}
-		n, _ := result.RowsAffected()
-		if n > 0 {
-			s.db.ExecContext(ctx, `ALTER TABLE peer_keys DELETE WHERE peer_id NOT IN (SELECT id FROM peers FINAL)`)
-		}
-		return int(n)
-	}
-
 	cutoff := now.Unix()
 	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM peers WHERE last_seen + ttl_seconds < $1`, cutoff,
@@ -660,9 +410,13 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 		return err
 	}
 
+	persist := 0
+	if req.Persist {
+		persist = 1
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO chunks (file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id) VALUES ($1, $2, $3, $4, $5, $6)`,
-		fileID, chunkIndex, hash, senderID, recipientID, peerID,
+		`INSERT INTO chunks (file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed) VALUES ($1, $2, $3, $4, $5, $6, $7, 0)`,
+		fileID, chunkIndex, hash, senderID, recipientID, peerID, persist,
 	)
 	if err != nil {
 		return fmt.Errorf("set chunk hash: %w", err)
@@ -676,12 +430,9 @@ func (s *dbStore) GetChunksByRecipient(ctx context.Context, recipientID string) 
 		return nil, ErrInvalidChunk
 	}
 
-	query := `SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id FROM chunks WHERE recipient_id = $1`
-	if s.isClickhouse() {
-		query = `SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id FROM chunks FINAL WHERE recipient_id = $1`
-	}
-
-	rows, err := s.db.QueryContext(ctx, query, recipientID)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed FROM chunks WHERE recipient_id = $1`, recipientID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("get chunks by recipient: %w", err)
 	}
@@ -691,34 +442,19 @@ func (s *dbStore) GetChunksByRecipient(ctx context.Context, recipientID string) 
 	for rows.Next() {
 		var rec model.ChunkRecord
 		var peerID string
-		if err := rows.Scan(&rec.FileID, &rec.ChunkIndex, &rec.Hash, &rec.SenderID, &rec.RecipientID, &peerID); err != nil {
+		var persist, confirmed int
+		if err := rows.Scan(&rec.FileID, &rec.ChunkIndex, &rec.Hash, &rec.SenderID, &rec.RecipientID, &peerID, &persist, &confirmed); err != nil {
 			return nil, fmt.Errorf("scan chunk: %w", err)
 		}
 		rec.PeerID = peerID
+		rec.Persist = persist != 0
+		rec.Confirmed = confirmed != 0
 		records = append(records, rec)
 	}
 	if records == nil {
 		records = []model.ChunkRecord{}
 	}
 	return records, nil
-}
-
-func (s *dbStore) DeleteChunksByRecipient(ctx context.Context, recipientID string, fileID string) error {
-	recipientID = strings.TrimSpace(recipientID)
-	fileID = strings.TrimSpace(fileID)
-	if recipientID == "" || fileID == "" {
-		return ErrInvalidChunk
-	}
-
-	query := `DELETE FROM chunks WHERE recipient_id = $1 AND file_id = $2`
-	if s.isClickhouse() {
-		query = `ALTER TABLE chunks DELETE WHERE recipient_id = $1 AND file_id = $2`
-	}
-	_, err := s.db.ExecContext(ctx, query, recipientID, fileID)
-	if err != nil {
-		return fmt.Errorf("delete chunks by recipient: %w", err)
-	}
-	return nil
 }
 
 func (s *dbStore) ReportChunk(ctx context.Context, sourcePeerID string, req model.ChunkReportRequest) (model.ChunkReportResult, error) {
@@ -743,11 +479,9 @@ func (s *dbStore) ReportChunk(ctx context.Context, sourcePeerID string, req mode
 	}
 
 	var expected string
-	chunkQuery := `SELECT expected_hash FROM chunks WHERE file_id = $1 AND chunk_index = $2`
-	if s.isClickhouse() {
-		chunkQuery = `SELECT expected_hash FROM chunks FINAL WHERE file_id = $1 AND chunk_index = $2`
-	}
-	err = s.db.QueryRowContext(ctx, chunkQuery, fileID, req.ChunkIndex).Scan(&expected)
+	err = s.db.QueryRowContext(ctx,
+		`SELECT expected_hash FROM chunks WHERE file_id = $1 AND chunk_index = $2`, fileID, req.ChunkIndex,
+	).Scan(&expected)
 	if err == sql.ErrNoRows {
 		return model.ChunkReportResult{}, ErrChunkNotFound
 	}
@@ -766,17 +500,11 @@ func (s *dbStore) ReportChunk(ctx context.Context, sourcePeerID string, req mode
 		qInvalidInc = 1
 	}
 
-	if s.isClickhouse() {
-		if err := s.updateQualityCH(ctx, sourcePeerID, delta, qValidInc, qInvalidInc); err != nil {
-			return model.ChunkReportResult{}, err
-		}
-	} else {
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE peers SET quality_score = quality_score + $1, quality_valid = quality_valid + $2, quality_invalid = quality_invalid + $3 WHERE id = $4`,
-			delta, qValidInc, qInvalidInc, sourcePeerID,
-		); err != nil {
-			return model.ChunkReportResult{}, fmt.Errorf("update quality: %w", err)
-		}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE peers SET quality_score = quality_score + $1, quality_valid = quality_valid + $2, quality_invalid = quality_invalid + $3 WHERE id = $4`,
+		delta, qValidInc, qInvalidInc, sourcePeerID,
+	); err != nil {
+		return model.ChunkReportResult{}, fmt.Errorf("update quality: %w", err)
 	}
 
 	peer, err := s.getPeerByID(ctx, sourcePeerID)
@@ -793,24 +521,75 @@ func (s *dbStore) ReportChunk(ctx context.Context, sourcePeerID string, req mode
 	}, nil
 }
 
-func (s *dbStore) updateQualityCH(ctx context.Context, peerID string, delta, validInc, invalidInc int) error {
-	peer, err := s.getPeerByID(ctx, peerID)
-	if err != nil {
-		return err
+func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkRequest) (model.ConfirmChunkResult, error) {
+	recipientID := strings.TrimSpace(req.RecipientID)
+	fileID := strings.TrimSpace(req.FileID)
+	confirmed := normalizeHash(req.Hash)
+
+	if recipientID == "" || fileID == "" || confirmed == "" || !validHashFormat(confirmed) || req.ChunkIndex < 0 ||
+		strings.TrimSpace(req.Signature) == "" {
+		return model.ConfirmChunkResult{}, ErrInvalidChunk
 	}
 
-	newScore := peer.QualityScore + delta
-	newValid := peer.Quality.ValidReports + validInc
-	newInvalid := peer.Quality.InvalidReports + invalidInc
+	recipient, err := s.getPeerByID(ctx, recipientID)
+	if err != nil {
+		return model.ConfirmChunkResult{}, ErrNotFound
+	}
 
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO peers (id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		peerID, jsonString(peer.Addresses), peer.PublicKey, peer.EncryptionKey,
-		peer.SignatureKey, jsonString(peer.Metadata), peer.LastSeen.Unix(),
-		peer.TTLSeconds, newScore, newValid, newInvalid,
-	)
-	return err
+	msg := sign.ConfirmedPayload(fileID, req.ChunkIndex, confirmed)
+	if err := verifyPeerSignature(recipient, req.Signature, msg); err != nil {
+		return model.ConfirmChunkResult{}, err
+	}
+
+	var expectedHash, senderID string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT expected_hash, sender_id FROM chunks WHERE file_id = $1 AND chunk_index = $2 AND recipient_id = $3`, fileID, req.ChunkIndex, recipientID,
+	).Scan(&expectedHash, &senderID)
+	if err == sql.ErrNoRows {
+		return model.ConfirmChunkResult{}, ErrChunkNotFound
+	}
+	if err != nil {
+		return model.ConfirmChunkResult{}, fmt.Errorf("get chunk: %w", err)
+	}
+
+	valid := confirmed == expectedHash
+	delta := QualityPointsInvalid
+	qValidInc := 0
+	qInvalidInc := 0
+	if valid {
+		delta = QualityPointsValid
+		qValidInc = 1
+	} else {
+		qInvalidInc = 1
+	}
+
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE peers SET quality_score = quality_score + $1, quality_valid = quality_valid + $2, quality_invalid = quality_invalid + $3 WHERE id = $4`,
+		delta, qValidInc, qInvalidInc, senderID,
+	); err != nil {
+		return model.ConfirmChunkResult{}, fmt.Errorf("update quality: %w", err)
+	}
+
+	if valid {
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE chunks SET confirmed = 1 WHERE file_id = $1 AND chunk_index = $2 AND recipient_id = $3`, fileID, req.ChunkIndex, recipientID,
+		); err != nil {
+			return model.ConfirmChunkResult{}, fmt.Errorf("update confirmed: %w", err)
+		}
+	}
+
+	sender, err := s.getPeerByID(ctx, senderID)
+	if err != nil {
+		return model.ConfirmChunkResult{}, fmt.Errorf("get updated peer: %w", err)
+	}
+
+	return model.ConfirmChunkResult{
+		Valid:         valid,
+		ExpectedHash:  expectedHash,
+		ConfirmedHash: confirmed,
+		Delta:         delta,
+		Peer:          sender,
+	}, nil
 }
 
 func (s *dbStore) isExpired(peer model.Peer, now time.Time) bool {
@@ -828,21 +607,6 @@ func (s *dbStore) SetPeerScore(id string, score int) error {
 	}
 
 	ctx := context.Background()
-
-	if s.isClickhouse() {
-		peer, err := s.getPeerByID(ctx, id)
-		if err != nil {
-			return err
-		}
-		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO peers (id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-			id, jsonString(peer.Addresses), peer.PublicKey, peer.EncryptionKey,
-			peer.SignatureKey, jsonString(peer.Metadata), peer.LastSeen.Unix(),
-			peer.TTLSeconds, score, peer.Quality.ValidReports, peer.Quality.InvalidReports,
-		)
-		return err
-	}
 
 	result, err := s.db.ExecContext(ctx, `UPDATE peers SET quality_score = $1 WHERE id = $2`, score, id)
 	if err != nil {
@@ -877,12 +641,9 @@ func (s *dbStore) PollSignals(ctx context.Context, peerID string) ([]model.Signa
 		return nil, ErrInvalidChunk
 	}
 
-	query := `SELECT sig_from, sig_type, sig_data FROM signals WHERE peer_id = $1`
-	if s.isClickhouse() {
-		query = `SELECT sig_from, sig_type, sig_data FROM signals FINAL WHERE peer_id = $1`
-	}
-
-	rows, err := s.db.QueryContext(ctx, query, peerID)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT sig_from, sig_type, sig_data FROM signals WHERE peer_id = $1`, peerID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("query signals: %w", err)
 	}
@@ -897,11 +658,7 @@ func (s *dbStore) PollSignals(ctx context.Context, peerID string) ([]model.Signa
 		sigs = append(sigs, sig)
 	}
 
-	if s.isClickhouse() {
-		s.db.ExecContext(ctx, `ALTER TABLE signals DELETE WHERE peer_id = $1`, peerID)
-	} else {
-		s.db.ExecContext(ctx, `DELETE FROM signals WHERE peer_id = $1`, peerID)
-	}
+	s.db.ExecContext(ctx, `DELETE FROM signals WHERE peer_id = $1`, peerID)
 
 	if sigs == nil {
 		return []model.Signal{}, nil

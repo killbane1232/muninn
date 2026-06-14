@@ -29,6 +29,8 @@ type chunkRecordEntry struct {
 	SenderID    string
 	RecipientID string
 	PeerID      string
+	Persist     bool
+	Confirmed   bool
 }
 
 func NewMemory() *MemoryStore {
@@ -81,6 +83,10 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 		s.removePeerKeysLocked(existing.ID, existing.Keys)
 		peer.QualityScore = existing.QualityScore
 		peer.Quality = existing.Quality
+		peer.PeerFlag = existing.PeerFlag
+		if req.PeerFlag != "" {
+			peer.PeerFlag = req.PeerFlag
+		}
 		if peer.EncryptionKey == "" {
 			peer.EncryptionKey = existing.EncryptionKey
 		}
@@ -89,6 +95,7 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 		}
 	} else {
 		peer.QualityScore = InitialQualityScore
+		peer.PeerFlag = req.PeerFlag
 	}
 
 	for _, k := range keys {
@@ -204,7 +211,7 @@ func (s *MemoryStore) GetBestPeers(_ context.Context, n int) ([]model.Peer, erro
 	}
 
 	sort.Slice(active, func(i, j int) bool {
-		return active[i].QualityScore > active[j].QualityScore
+		return EffectiveScore(active[i]) > EffectiveScore(active[j])
 	})
 
 	if n > len(active) {
@@ -308,6 +315,8 @@ func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex 
 		SenderID:    senderID,
 		RecipientID: recipientID,
 		PeerID:      peerID,
+		Persist:     req.Persist,
+		Confirmed:   false,
 	})
 	return nil
 }
@@ -373,6 +382,68 @@ func (s *MemoryStore) ReportChunk(_ context.Context, sourcePeerID string, req mo
 	}, nil
 }
 
+func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequest) (model.ConfirmChunkResult, error) {
+	recipientID := strings.TrimSpace(req.RecipientID)
+	fileID := strings.TrimSpace(req.FileID)
+	confirmed := normalizeHash(req.Hash)
+
+	if recipientID == "" || fileID == "" || confirmed == "" || !validHashFormat(confirmed) || req.ChunkIndex < 0 ||
+		strings.TrimSpace(req.Signature) == "" {
+		return model.ConfirmChunkResult{}, ErrInvalidChunk
+	}
+
+	key := chunkKey(fileID, req.ChunkIndex)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	recipient, ok := s.peers[recipientID]
+	if !ok {
+		return model.ConfirmChunkResult{}, ErrNotFound
+	}
+	msg := sign.ConfirmedPayload(fileID, req.ChunkIndex, confirmed)
+	if err := verifyPeerSignature(recipient, req.Signature, msg); err != nil {
+		return model.ConfirmChunkResult{}, err
+	}
+
+	var entry *chunkRecordEntry
+	for i := range s.chunks {
+		if s.chunks[i].key == key && s.chunks[i].RecipientID == recipientID {
+			entry = &s.chunks[i]
+			break
+		}
+	}
+	if entry == nil {
+		return model.ConfirmChunkResult{}, ErrChunkNotFound
+	}
+
+	var senderPeer model.Peer
+	senderPeer, ok = s.peers[entry.SenderID]
+	if !ok {
+		return model.ConfirmChunkResult{}, ErrNotFound
+	}
+
+	valid := confirmed == entry.Hash
+	delta := QualityPointsInvalid
+	if valid {
+		delta = QualityPointsValid
+		senderPeer.Quality.ValidReports++
+		entry.Confirmed = true
+	} else {
+		senderPeer.Quality.InvalidReports++
+	}
+	senderPeer.QualityScore += delta
+	s.peers[entry.SenderID] = senderPeer
+
+	return model.ConfirmChunkResult{
+		Valid:         valid,
+		ExpectedHash:  entry.Hash,
+		ConfirmedHash: confirmed,
+		Delta:         delta,
+		Peer:          senderPeer,
+	}, nil
+}
+
 func (s *MemoryStore) GetChunksByRecipient(_ context.Context, recipientID string) ([]model.ChunkRecord, error) {
 	recipientID = strings.TrimSpace(recipientID)
 	if recipientID == "" {
@@ -395,36 +466,14 @@ func (s *MemoryStore) GetChunksByRecipient(_ context.Context, recipientID string
 			RecipientID: entry.RecipientID,
 			Hash:        entry.Hash,
 			PeerID:      entry.PeerID,
+			Persist:     entry.Persist,
+			Confirmed:   entry.Confirmed,
 		})
 	}
 	if records == nil {
 		records = []model.ChunkRecord{}
 	}
 	return records, nil
-}
-
-func (s *MemoryStore) DeleteChunksByRecipient(_ context.Context, recipientID string, fileID string) error {
-	recipientID = strings.TrimSpace(recipientID)
-	fileID = strings.TrimSpace(fileID)
-	if recipientID == "" || fileID == "" {
-		return ErrInvalidChunk
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var kept []chunkRecordEntry
-	for _, entry := range s.chunks {
-		if entry.RecipientID == recipientID {
-			fid, _ := parseChunkKey(entry.key)
-			if fid == fileID {
-				continue
-			}
-		}
-		kept = append(kept, entry)
-	}
-	s.chunks = kept
-	return nil
 }
 
 func parseChunkKey(key string) (string, int) {

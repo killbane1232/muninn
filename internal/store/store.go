@@ -25,6 +25,34 @@ const (
 	QualityPointsInvalid = -1
 )
 
+// EffectiveScore — quality_score, возведённый в степень согласно PeerFlag.
+// Для чётных степеней знак исходного числа сохраняется.
+func EffectiveScore(peer model.Peer) int {
+	exp := peerFlagExponent(peer.PeerFlag)
+	score := peer.QualityScore
+	result := 1
+	for i := 0; i < exp; i++ {
+		result *= score
+	}
+	if exp%2 == 0 && score < 0 && result > 0 {
+		result = -result
+	}
+	return result
+}
+
+func peerFlagExponent(flag model.PeerFlag) int {
+	switch flag {
+	case model.PeerFlagThin:
+		return 1
+	case model.PeerFlagThick:
+		return 2
+	case model.PeerFlagVeryThick:
+		return 3
+	default:
+		return 1
+	}
+}
+
 // Store — хранилище телефонной книги.
 type Store interface {
 	Upsert(ctx context.Context, req model.RegisterRequest) (model.Peer, error)
@@ -37,8 +65,8 @@ type Store interface {
 	SetChunkHash(ctx context.Context, fileID string, chunkIndex int, req model.RegisterChunkRequest) error
 	GetBestPeers(ctx context.Context, n int) ([]model.Peer, error)
 	ReportChunk(ctx context.Context, sourcePeerID string, req model.ChunkReportRequest) (model.ChunkReportResult, error)
+	ConfirmChunk(ctx context.Context, req model.ConfirmChunkRequest) (model.ConfirmChunkResult, error)
 	GetChunksByRecipient(ctx context.Context, recipientID string) ([]model.ChunkRecord, error)
-	DeleteChunksByRecipient(ctx context.Context, recipientID string, fileID string) error
 
 	SetSignal(ctx context.Context, peerID string, sig model.Signal) error
 	PollSignals(ctx context.Context, peerID string) ([]model.Signal, error)

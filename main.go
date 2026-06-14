@@ -30,7 +30,7 @@ func main() {
 	dsn := os.Getenv("MUNINN_STORE_DSN")
 
 	switch driver {
-	case "sqlite", "postgres", "clickhouse":
+	case "sqlite", "postgres":
 		var err error
 		st, err = store.NewDB(driver, dsn)
 		if err != nil {
