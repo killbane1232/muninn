@@ -74,9 +74,9 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 
 	if isNew {
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO peers (id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag)
+			`INSERT INTO peers (id, addresses, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-			id, jsonString(req.Addresses), strings.TrimSpace(req.PublicKey),
+			id, jsonString(req.Addresses),
 			encKey, sigKey, jsonString(req.Metadata), nowUnix, ttl,
 			InitialQualityScore, 0, 0, peerFlag,
 		)
@@ -84,7 +84,6 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 		_, err = tx.ExecContext(ctx,
 			`UPDATE peers SET
 				addresses = $1,
-				public_key = $2,
 				encryption_key = CASE WHEN $3 = '' THEN encryption_key ELSE $3 END,
 				signature_key = CASE WHEN $4 = '' THEN signature_key ELSE $4 END,
 				metadata = $5,
@@ -92,8 +91,8 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 				ttl_seconds = $7,
 				peer_flag = CASE WHEN $9 = '' THEN peer_flag ELSE $9 END
 			 WHERE id = $8`,
-			jsonString(req.Addresses), strings.TrimSpace(req.PublicKey),
-			strings.TrimSpace(req.EncryptionKey), strings.TrimSpace(req.SignatureKey),
+			jsonString(req.Addresses), strings.TrimSpace(req.EncryptionKey), 
+			strings.TrimSpace(req.SignatureKey),
 			jsonString(req.Metadata), nowUnix, ttl, id, peerFlag,
 		)
 	}
@@ -138,9 +137,9 @@ func (s *dbStore) getPeerByID(ctx context.Context, id string) (model.Peer, error
 	var peerFlag string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, addresses, public_key, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag FROM peers WHERE id = $1`, id,
+		`SELECT id, addresses, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag FROM peers WHERE id = $1`, id,
 	).Scan(
-		&peer.ID, &addressesJSON, &peer.PublicKey, &peer.EncryptionKey,
+		&peer.ID, &addressesJSON, &peer.EncryptionKey,
 		&peer.SignatureKey, &metadataJSON, &lastSeenUnix, &peer.TTLSeconds,
 		&peer.QualityScore, &qValid, &qInvalid, &peerFlag,
 	)
