@@ -68,7 +68,6 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 		ID:            id,
 		Keys:          keys,
 		Addresses:     copyStrings(req.Addresses),
-		PublicKey:     strings.TrimSpace(req.PublicKey),
 		EncryptionKey: strings.TrimSpace(req.EncryptionKey),
 		SignatureKey:  strings.TrimSpace(req.SignatureKey),
 		Metadata:      copyMetadata(req.Metadata),
