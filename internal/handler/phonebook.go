@@ -294,6 +294,29 @@ func (h *Phonebook) PollSignals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sigs)
 }
 
+func (h *Phonebook) GetBestThickPeers(w http.ResponseWriter, r *http.Request) {
+	nStr := r.URL.Query().Get("n")
+	n := 10
+	if nStr != "" {
+		parsed, err := strconv.Atoi(nStr)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid n")
+			return
+		}
+		n = parsed
+	}
+
+	peers, err := h.Store.GetBestThickPeers(r.Context(), n)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if peers == nil {
+		peers = []model.Peer{}
+	}
+	writeJSON(w, http.StatusOK, peers)
+}
+
 func (h *Phonebook) Health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

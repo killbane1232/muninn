@@ -408,7 +408,7 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 
 	var entry *chunkRecordEntry
 	for i := range s.chunks {
-		if s.chunks[i].key == key && s.chunks[i].RecipientID == recipientID {
+		if s.chunks[i].key == key && (s.chunks[i].RecipientID == recipientID || s.chunks[i].PeerID == recipientID || s.chunks[i].Persist) {
 			entry = &s.chunks[i]
 			break
 		}
@@ -523,6 +523,35 @@ func (s *MemoryStore) PollSignals(_ context.Context, peerID string) ([]model.Sig
 		return []model.Signal{}, nil
 	}
 	return sigs, nil
+}
+
+func (s *MemoryStore) GetBestThickPeers(_ context.Context, n int) ([]model.Peer, error) {
+	if n <= 0 {
+		return []model.Peer{}, nil
+	}
+
+	now := time.Now().UTC()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	active := make([]model.Peer, 0, len(s.peers))
+	for _, peer := range s.peers {
+		if s.isExpired(peer, now) {
+			continue
+		}
+		if peer.PeerFlag == model.PeerFlagThick || peer.PeerFlag == model.PeerFlagVeryThick {
+			active = append(active, peer)
+		}
+	}
+
+	sort.Slice(active, func(i, j int) bool {
+		return EffectiveScore(active[i]) > EffectiveScore(active[j])
+	})
+
+	if n > len(active) {
+		n = len(active)
+	}
+	return active[:n], nil
 }
 
 // SetPeerScore sets the quality score for a peer. Exported for testing.

@@ -69,7 +69,7 @@ func loadMigrations() ([]Migration, error) {
 		}
 		postgresSQL, err := migrationsFS.ReadFile("migrations/postgres/" + name)
 		if err != nil {
-			return nil, fmt.Errorf("read postgres/%s: %w", name, err)
+			postgresSQL = []byte{}
 		}
 
 		result = append(result, Migration{
@@ -114,16 +114,24 @@ func schemaVersionTable(driver string) string {
 
 func runMigrations(db *sql.DB, driver string) error {
 	ddl := schemaVersionTable(driver)
+	
 	if ddl == "" {
 		return fmt.Errorf("unsupported driver for migration: %s", driver)
 	}
 
-	if _, err := db.Exec(ddl); err != nil {
-		return fmt.Errorf("create schema_version: %w", err)
+	rows, err := db.Query(`SELECT id FROM schema_version`)
+	if err != nil {
+		log.Printf("create schema_version: %w", err)
+		if _, err2 := db.Exec(ddl); err2 != nil {
+			log.Printf("create schema_version: %w", err2)
+			return fmt.Errorf("create schema_version: %w", err2)
+		}
 	}
 
 	applied := make(map[string]bool)
-	rows, err := db.Query(`SELECT id FROM schema_version`)
+	if rows == nil || err != nil {
+		rows, err = db.Query(`SELECT id FROM schema_version`)
+	}
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {

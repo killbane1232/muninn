@@ -68,6 +68,8 @@ type Store interface {
 	ConfirmChunk(ctx context.Context, req model.ConfirmChunkRequest) (model.ConfirmChunkResult, error)
 	GetChunksByRecipient(ctx context.Context, recipientID string) ([]model.ChunkRecord, error)
 
+	GetBestThickPeers(ctx context.Context, n int) ([]model.Peer, error)
+
 	SetSignal(ctx context.Context, peerID string, sig model.Signal) error
 	PollSignals(ctx context.Context, peerID string) ([]model.Signal, error)
 }

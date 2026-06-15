@@ -28,6 +28,9 @@ func main() {
 	var st store.Store
 	driver := os.Getenv("MUNINN_STORE_DRIVER")
 	dsn := os.Getenv("MUNINN_STORE_DSN")
+	if driver != "postgres" && driver != "internal" {
+		driver = "sqlite"
+	}
 
 	switch driver {
 	case "sqlite", "postgres":
