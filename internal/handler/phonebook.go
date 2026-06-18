@@ -322,6 +322,7 @@ func (h *Phonebook) Health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {
+	log.Printf("Store error %v", err)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())

@@ -61,7 +61,6 @@ type Store interface {
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]model.Peer, error)
 	Heartbeat(ctx context.Context, id string, ttlSeconds int) (model.Peer, error)
-	PurgeExpired(ctx context.Context) int
 	SetChunkHash(ctx context.Context, fileID string, chunkIndex int, req model.RegisterChunkRequest) error
 	GetBestPeers(ctx context.Context, n int) ([]model.Peer, error)
 	ReportChunk(ctx context.Context, sourcePeerID string, req model.ChunkReportRequest) (model.ChunkReportResult, error)

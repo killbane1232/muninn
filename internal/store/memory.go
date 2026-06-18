@@ -219,22 +219,6 @@ func (s *MemoryStore) GetBestPeers(_ context.Context, n int) ([]model.Peer, erro
 	return active[:n], nil
 }
 
-func (s *MemoryStore) PurgeExpired(_ context.Context) int {
-	now := time.Now().UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	removed := 0
-	for id, peer := range s.peers {
-		if s.isExpired(peer, now) {
-			s.removePeerKeysLocked(id, peer.Keys)
-			delete(s.peers, id)
-			removed++
-		}
-	}
-	return removed
-}
-
 func (s *MemoryStore) isExpired(peer model.Peer, now time.Time) bool {
 	ttl := peer.TTLSeconds
 	if ttl <= 0 {

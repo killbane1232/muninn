@@ -75,7 +75,7 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 	if isNew {
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO peers (id, addresses, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 			id, jsonString(req.Addresses),
 			encKey, sigKey, jsonString(req.Metadata), nowUnix, ttl,
 			InitialQualityScore, 0, 0, peerFlag,
@@ -84,13 +84,13 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 		_, err = tx.ExecContext(ctx,
 			`UPDATE peers SET
 				addresses = $1,
-				encryption_key = CASE WHEN $3 = '' THEN encryption_key ELSE $3 END,
-				signature_key = CASE WHEN $4 = '' THEN signature_key ELSE $4 END,
-				metadata = $5,
-				last_seen = $6,
-				ttl_seconds = $7,
-				peer_flag = CASE WHEN $9 = '' THEN peer_flag ELSE $9 END
-			 WHERE id = $8`,
+				encryption_key = CASE WHEN $2 = '' THEN encryption_key ELSE $2 END,
+				signature_key = CASE WHEN $3 = '' THEN signature_key ELSE $3 END,
+				metadata = $4,
+				last_seen = $5,
+				ttl_seconds = $6,
+				peer_flag = CASE WHEN $8 = '' THEN peer_flag ELSE $8 END
+			 WHERE id = $7`,
 			jsonString(req.Addresses), strings.TrimSpace(req.EncryptionKey), 
 			strings.TrimSpace(req.SignatureKey),
 			jsonString(req.Metadata), nowUnix, ttl, id, peerFlag,
@@ -331,19 +331,6 @@ func (s *dbStore) GetBestPeers(ctx context.Context, n int) ([]model.Peer, error)
 		out[i] = candidates[i].peer
 	}
 	return out, nil
-}
-
-func (s *dbStore) PurgeExpired(ctx context.Context) int {
-	now := time.Now().UTC()
-	cutoff := now.Unix()
-	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM peers WHERE last_seen + ttl_seconds < $1`, cutoff,
-	)
-	if err != nil {
-		return 0
-	}
-	n, _ := result.RowsAffected()
-	return int(n)
 }
 
 func (s *dbStore) isExpired(peer model.Peer, now time.Time) bool {
