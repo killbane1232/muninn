@@ -74,11 +74,11 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 
 	if isNew {
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO peers (id, addresses, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			`INSERT INTO peers (id, addresses, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag, fake)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, 0))`,
 			id, jsonString(req.Addresses),
 			encKey, sigKey, jsonString(req.Metadata), nowUnix, ttl,
-			InitialQualityScore, 0, 0, peerFlag,
+			InitialQualityScore, 0, 0, peerFlag, req.Fake,
 		)
 	} else {
 		_, err = tx.ExecContext(ctx,
@@ -89,11 +89,12 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 				metadata = $4,
 				last_seen = $5,
 				ttl_seconds = $6,
-				peer_flag = CASE WHEN $8 = '' THEN peer_flag ELSE $8 END
+				peer_flag = CASE WHEN $8 = '' THEN peer_flag ELSE $8 END,
+				fake = CASE WHEN $9 IS NOT NULL THEN $9 ELSE fake END
 			 WHERE id = $7`,
-			jsonString(req.Addresses), strings.TrimSpace(req.EncryptionKey), 
+			jsonString(req.Addresses), strings.TrimSpace(req.EncryptionKey),
 			strings.TrimSpace(req.SignatureKey),
-			jsonString(req.Metadata), nowUnix, ttl, id, peerFlag,
+			jsonString(req.Metadata), nowUnix, ttl, id, peerFlag, req.Fake,
 		)
 	}
 	if err != nil {
@@ -137,11 +138,11 @@ func (s *dbStore) getPeerByID(ctx context.Context, id string) (model.Peer, error
 	var peerFlag string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, addresses, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag FROM peers WHERE id = $1`, id,
+		`SELECT id, addresses, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag, fake FROM peers WHERE id = $1`, id,
 	).Scan(
 		&peer.ID, &addressesJSON, &peer.EncryptionKey,
 		&peer.SignatureKey, &metadataJSON, &lastSeenUnix, &peer.TTLSeconds,
-		&peer.QualityScore, &qValid, &qInvalid, &peerFlag,
+		&peer.QualityScore, &qValid, &qInvalid, &peerFlag, &peer.Fake,
 	)
 	peer.PeerFlag = model.PeerFlag(peerFlag)
 	if err == sql.ErrNoRows {
@@ -238,7 +239,7 @@ func (s *dbStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *dbStore) List(ctx context.Context) ([]model.Peer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM peers`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM peers WHERE fake = 0`)
 	if err != nil {
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
@@ -290,7 +291,7 @@ func (s *dbStore) GetBestPeers(ctx context.Context, n int) ([]model.Peer, error)
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, quality_score, peer_flag FROM peers`,
+		`SELECT id, quality_score, peer_flag FROM peers WHERE fake = 0`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get best peers: %w", err)
@@ -379,7 +380,7 @@ func (s *dbStore) GetBestThickPeers(ctx context.Context, n int) ([]model.Peer, e
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM peers WHERE peer_flag IN ('thick', 'very_thick')`,
+		`SELECT id FROM peers WHERE peer_flag IN ('thick', 'very_thick') AND fake = 0`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get best thick peers: %w", err)

@@ -121,9 +121,7 @@ func runMigrations(db *sql.DB, driver string) error {
 
 	rows, err := db.Query(`SELECT id FROM schema_version`)
 	if err != nil {
-		log.Printf("create schema_version: %w", err)
 		if _, err2 := db.Exec(ddl); err2 != nil {
-			log.Printf("create schema_version: %w", err2)
 			return fmt.Errorf("create schema_version: %w", err2)
 		}
 	}

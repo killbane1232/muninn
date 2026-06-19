@@ -86,15 +86,15 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 		if req.PeerFlag != "" {
 			peer.PeerFlag = req.PeerFlag
 		}
-		if peer.EncryptionKey == "" {
-			peer.EncryptionKey = existing.EncryptionKey
-		}
-		if peer.SignatureKey == "" {
-			peer.SignatureKey = existing.SignatureKey
-		}
+		peer.Fake = existing.Fake
+		peer.EncryptionKey = existing.EncryptionKey
+		peer.SignatureKey = existing.SignatureKey
 	} else {
 		peer.QualityScore = InitialQualityScore
 		peer.PeerFlag = req.PeerFlag
+		if req.Fake != nil {
+			peer.Fake = *req.Fake
+		}
 	}
 
 	for _, k := range keys {
@@ -169,7 +169,7 @@ func (s *MemoryStore) List(_ context.Context) ([]model.Peer, error) {
 
 	out := make([]model.Peer, 0, len(s.peers))
 	for _, peer := range s.peers {
-		if !s.isExpired(peer, now) {
+		if !s.isExpired(peer, now) && !peer.Fake {
 			out = append(out, peer)
 		}
 	}
@@ -204,7 +204,7 @@ func (s *MemoryStore) GetBestPeers(_ context.Context, n int) ([]model.Peer, erro
 
 	active := make([]model.Peer, 0, len(s.peers))
 	for _, peer := range s.peers {
-		if !s.isExpired(peer, now) {
+		if !s.isExpired(peer, now) && !peer.Fake {
 			active = append(active, peer)
 		}
 	}
@@ -519,7 +519,7 @@ func (s *MemoryStore) GetBestThickPeers(_ context.Context, n int) ([]model.Peer,
 
 	active := make([]model.Peer, 0, len(s.peers))
 	for _, peer := range s.peers {
-		if s.isExpired(peer, now) {
+		if s.isExpired(peer, now) || peer.Fake {
 			continue
 		}
 		if peer.PeerFlag == model.PeerFlagThick || peer.PeerFlag == model.PeerFlagVeryThick {

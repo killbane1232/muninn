@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"log"
 
 	"github.com/killbane1232/muninn/internal/model"
 	"github.com/killbane1232/muninn/internal/sign"
@@ -43,17 +42,14 @@ func NewDB(driver, dsn string) (Store, error) {
 
 	db, err := sql.Open(sqlDriver, dsn)
 	if err != nil {
-		log.Printf("open %s: %w", driver, err)
 		return nil, fmt.Errorf("open %s: %w", driver, err)
 	}
 
 	if err := db.Ping(); err != nil {
-		log.Printf("ping %s: %w", driver, err)
 		return nil, fmt.Errorf("ping %s: %w", driver, err)
 	}
 
 	if err := runMigrations(db, sqlDriver); err != nil {
-		log.Printf("migrations %s: %w", driver, err)
 		return nil, fmt.Errorf("migrations %s: %w", driver, err)
 	}
 
