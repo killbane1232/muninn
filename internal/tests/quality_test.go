@@ -61,7 +61,7 @@ func TestChunkConfirmScoring(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	chunks, _ := s.GetChunksByRecipient(ctx, "receiver")
+	chunks, _ := s.GetChunksByRecipient(ctx, "receiver", 0)
 	if len(chunks) != 1 || chunks[0].Confirmed {
 		t.Fatalf("expected 1 unconfirmed chunk, got %+v", chunks)
 	}
@@ -79,7 +79,7 @@ func TestChunkConfirmScoring(t *testing.T) {
 		t.Fatalf("sender after valid: %+v", ok.Peer)
 	}
 
-	chunks, _ = s.GetChunksByRecipient(ctx, "receiver")
+	chunks, _ = s.GetChunksByRecipient(ctx, "receiver", 0)
 	if len(chunks) != 1 || !chunks[0].Confirmed {
 		t.Fatalf("expected 1 confirmed chunk, got %+v", chunks)
 	}
@@ -249,7 +249,7 @@ func TestPersistChunkFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	records, err := s.GetChunksByRecipient(ctx, "recipient")
+	records, err := s.GetChunksByRecipient(ctx, "recipient", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestChunkPersistBatchEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	records, err := s.GetChunksByRecipient(ctx, "r")
+	records, err := s.GetChunksByRecipient(ctx, "r", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

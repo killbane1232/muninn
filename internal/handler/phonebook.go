@@ -248,7 +248,14 @@ func (h *Phonebook) GetChunksByRecipient(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	chunks, err := h.Store.GetChunksByRecipient(r.Context(), recipientID)
+	dateFrom := int64(0)
+	if df := r.URL.Query().Get("date_from"); df != "" {
+		if parsed, err := strconv.ParseInt(df, 10, 64); err == nil {
+			dateFrom = parsed
+		}
+	}
+
+	chunks, err := h.Store.GetChunksByRecipient(r.Context(), recipientID, dateFrom)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -257,6 +264,39 @@ func (h *Phonebook) GetChunksByRecipient(w http.ResponseWriter, r *http.Request)
 		chunks = []model.ChunkRecord{}
 	}
 	writeJSON(w, http.StatusOK, chunks)
+}
+
+func (h *Phonebook) GetChunksByFileID(w http.ResponseWriter, r *http.Request) {
+	recipientID := r.PathValue("file_id")
+	if recipientID == "" {
+		writeError(w, http.StatusBadRequest, "file_id required")
+		return
+	}
+
+	chunks, err := h.Store.GetChunksByFileID(r.Context(), recipientID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if chunks == nil {
+		chunks = []model.ChunkRecord{}
+	}
+	writeJSON(w, http.StatusOK, chunks)
+}
+
+func (h *Phonebook) ReadChunk(w http.ResponseWriter, r *http.Request) {
+	var req model.ReadChunkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+
+	result, err := h.Store.ReadChunk(r.Context(), req)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Phonebook) SetSignal(w http.ResponseWriter, r *http.Request) {

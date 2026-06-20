@@ -14,6 +14,7 @@ import (
 
 const driverSQLite = "sqlite"
 const driverPostgres = "postgres"
+const defaultChunkTTL = 86400
 
 var driverMap = map[string]string{
 	driverSQLite:  "sqlite",
@@ -80,9 +81,14 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 	if req.Persist {
 		persist = 1
 	}
+	chunkTTL := req.TTL
+	if chunkTTL <= 0 {
+		chunkTTL = defaultChunkTTL
+	}
+	now := time.Now().Unix()
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO chunks (file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed) VALUES ($1, $2, $3, $4, $5, $6, $7, 0)`,
-		fileID, chunkIndex, hash, senderID, recipientID, peerID, persist,
+		`INSERT INTO chunks (file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed, created_at, ttl) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9)`,
+		fileID, chunkIndex, hash, senderID, recipientID, peerID, persist, now, chunkTTL,
 	)
 	if err != nil {
 		return fmt.Errorf("set chunk hash: %w", err)
@@ -90,14 +96,14 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 	return nil
 }
 
-func (s *dbStore) GetChunksByRecipient(ctx context.Context, recipientID string) ([]model.ChunkRecord, error) {
+func (s *dbStore) GetChunksByRecipient(ctx context.Context, recipientID string, dateFrom int64) ([]model.ChunkRecord, error) {
 	recipientID = strings.TrimSpace(recipientID)
 	if recipientID == "" {
 		return nil, ErrInvalidChunk
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed FROM chunks WHERE recipient_id = $1`, recipientID,
+		`SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed, readed, created_at, ttl FROM chunks WHERE recipient_id = $1 AND created_at >= $2`, recipientID, dateFrom,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get chunks by recipient: %w", err)
@@ -108,13 +114,48 @@ func (s *dbStore) GetChunksByRecipient(ctx context.Context, recipientID string) 
 	for rows.Next() {
 		var rec model.ChunkRecord
 		var peerID string
-		var persist, confirmed int
-		if err := rows.Scan(&rec.FileID, &rec.ChunkIndex, &rec.Hash, &rec.SenderID, &rec.RecipientID, &peerID, &persist, &confirmed); err != nil {
+		var persist, confirmed, readed int
+		if err := rows.Scan(&rec.FileID, &rec.ChunkIndex, &rec.Hash, &rec.SenderID, &rec.RecipientID, &peerID, &persist, &confirmed, &readed, &rec.CreatedAt, &rec.TTL); err != nil {
 			return nil, fmt.Errorf("scan chunk: %w", err)
 		}
 		rec.PeerID = peerID
 		rec.Persist = persist != 0
 		rec.Confirmed = confirmed != 0
+		rec.Readed = readed != 0
+		records = append(records, rec)
+	}
+	if records == nil {
+		records = []model.ChunkRecord{}
+	}
+	return records, nil
+}
+
+func (s *dbStore) GetChunksByFileID(ctx context.Context, fileID string) ([]model.ChunkRecord, error) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return nil, ErrInvalidChunk
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed, readed, created_at, ttl FROM chunks WHERE file_id = $1`, fileID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get chunks by recipient: %w", err)
+	}
+	defer rows.Close()
+
+	var records []model.ChunkRecord
+	for rows.Next() {
+		var rec model.ChunkRecord
+		var peerID string
+		var persist, confirmed, readed int
+		if err := rows.Scan(&rec.FileID, &rec.ChunkIndex, &rec.Hash, &rec.SenderID, &rec.RecipientID, &peerID, &persist, &confirmed, &readed, &rec.CreatedAt, &rec.TTL); err != nil {
+			return nil, fmt.Errorf("scan chunk: %w", err)
+		}
+		rec.PeerID = peerID
+		rec.Persist = persist != 0
+		rec.Confirmed = confirmed != 0
+		rec.Readed = readed != 0
 		records = append(records, rec)
 	}
 	if records == nil {
@@ -258,6 +299,33 @@ func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkReques
 	}, nil
 }
 
+func (s *dbStore) ReadChunk(ctx context.Context, req model.ReadChunkRequest) (model.ReadChunkResult, error) {
+	recipientID := strings.TrimSpace(req.RecipientID)
+	fileID := strings.TrimSpace(req.FileID)
+
+	if fileID == "" || strings.TrimSpace(req.Signature) == "" {
+		return model.ReadChunkResult{}, ErrInvalidChunk
+	}
+
+	recipient, err := s.getPeerByID(ctx, recipientID)
+	if err != nil {
+		return model.ReadChunkResult{}, ErrNotFound
+	}
+
+	msg := sign.ReadPayload(fileID)
+	if err := verifyPeerSignature(recipient, req.Signature, msg); err != nil {
+		return model.ReadChunkResult{}, err
+	}
+
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE chunks SET readed = 1 WHERE file_id = $1 AND recipient_id = $2`, fileID, recipientID,
+	); err != nil {
+		return model.ReadChunkResult{}, fmt.Errorf("update readed: %w", err)
+	}
+
+	return model.ReadChunkResult{Valid: true}, nil
+}
+
 func (s *dbStore) SetSignal(ctx context.Context, peerID string, sig model.Signal) error {
 	peerID = strings.TrimSpace(peerID)
 	if peerID == "" || sig.From == "" || sig.Type == "" {
@@ -303,6 +371,21 @@ func (s *dbStore) PollSignals(ctx context.Context, peerID string) ([]model.Signa
 		return []model.Signal{}, nil
 	}
 	return sigs, nil
+}
+
+func (s *dbStore) DeleteExpiredChunks(ctx context.Context) (int64, error) {
+	var stmt string
+	switch s.driver {
+	case "sqlite":
+		stmt = `DELETE FROM chunks WHERE persist = 0 AND created_at + ttl < unixepoch()`
+	case "pgx":
+		stmt = `DELETE FROM chunks WHERE persist = 0 AND created_at + ttl < extract(epoch from now())`
+	}
+	result, err := s.db.ExecContext(ctx, stmt)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired chunks: %w", err)
+	}
+	return result.RowsAffected()
 }
 
 func (s *dbStore) Close() error {

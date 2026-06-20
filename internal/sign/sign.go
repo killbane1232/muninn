@@ -28,6 +28,11 @@ func ConfirmedPayload(fileID string, chunkIndex int, hash string) []byte {
 	return []byte(fmt.Sprintf("muninn/confirmed/v1\n%s\n%d\n%s", fileID, chunkIndex, hash))
 }
 
+// ReadPayload — сообщение для подписи получателя (подтверждение прочтения).
+func ReadPayload(fileID string) []byte {
+	return []byte(fmt.Sprintf("muninn/read/v1\n%s", fileID))
+}
+
 // Verify проверяет Ed25519-подпись по публичному ключу (Base64, 32 байта).
 func Verify(publicKeyB64, signatureB64 string, message []byte) error {
 	pub, err := decodePublicKey(publicKeyB64)

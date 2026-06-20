@@ -31,6 +31,9 @@ type chunkRecordEntry struct {
 	PeerID      string
 	Persist     bool
 	Confirmed   bool
+	Readed      bool
+	CreatedAt   int64
+	TTL         int
 }
 
 func NewMemory() *MemoryStore {
@@ -292,6 +295,10 @@ func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex 
 	}
 
 	key := chunkKey(fileID, chunkIndex)
+	chunkTTL := req.TTL
+	if chunkTTL <= 0 {
+		chunkTTL = defaultChunkTTL
+	}
 	s.chunks = append(s.chunks, chunkRecordEntry{
 		key:         key,
 		Hash:        hash,
@@ -300,6 +307,8 @@ func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex 
 		PeerID:      peerID,
 		Persist:     req.Persist,
 		Confirmed:   false,
+		CreatedAt:   time.Now().Unix(),
+		TTL:         chunkTTL,
 	})
 	return nil
 }
@@ -427,7 +436,46 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 	}, nil
 }
 
-func (s *MemoryStore) GetChunksByRecipient(_ context.Context, recipientID string) ([]model.ChunkRecord, error) {
+func (s *MemoryStore) ReadChunk(_ context.Context, req model.ReadChunkRequest) (model.ReadChunkResult, error) {
+	recipientID := strings.TrimSpace(req.RecipientID)
+	fileID := strings.TrimSpace(req.FileID)
+
+	if fileID == "" || strings.TrimSpace(req.Signature) == "" {
+		return model.ReadChunkResult{}, ErrInvalidChunk
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	recipient, ok := s.peers[recipientID]
+	if !ok {
+		return model.ReadChunkResult{}, ErrNotFound
+	}
+
+	msg := sign.ReadPayload(fileID)
+	if err := verifyPeerSignature(recipient, req.Signature, msg); err != nil {
+		return model.ReadChunkResult{}, err
+	}
+
+	marked := false
+	for i := range s.chunks {
+		if s.chunks[i].RecipientID == recipientID {
+			file, _ := parseChunkKey(s.chunks[i].key)
+			if file == fileID {
+				s.chunks[i].Readed = true
+				marked = true
+			}
+		}
+	}
+
+	if !marked {
+		return model.ReadChunkResult{}, ErrChunkNotFound
+	}
+
+	return model.ReadChunkResult{Valid: true}, nil
+}
+
+func (s *MemoryStore) GetChunksByRecipient(_ context.Context, recipientID string, dateFrom int64) ([]model.ChunkRecord, error) {
 	recipientID = strings.TrimSpace(recipientID)
 	if recipientID == "" {
 		return nil, ErrInvalidChunk
@@ -438,7 +486,7 @@ func (s *MemoryStore) GetChunksByRecipient(_ context.Context, recipientID string
 
 	var records []model.ChunkRecord
 	for _, entry := range s.chunks {
-		if entry.RecipientID != recipientID {
+		if entry.RecipientID != recipientID || entry.CreatedAt < dateFrom {
 			continue
 		}
 		fileID, idx := parseChunkKey(entry.key)
@@ -451,6 +499,44 @@ func (s *MemoryStore) GetChunksByRecipient(_ context.Context, recipientID string
 			PeerID:      entry.PeerID,
 			Persist:     entry.Persist,
 			Confirmed:   entry.Confirmed,
+			Readed:      entry.Readed,
+			CreatedAt:   entry.CreatedAt,
+			TTL:         entry.TTL,
+		})
+	}
+	if records == nil {
+		records = []model.ChunkRecord{}
+	}
+	return records, nil
+}
+
+func (s *MemoryStore) GetChunksByFileID(_ context.Context, fileID string) ([]model.ChunkRecord, error) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return nil, ErrInvalidChunk
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var records []model.ChunkRecord
+	for _, entry := range s.chunks {
+		fid, idx := parseChunkKey(entry.key)
+		if fid != fileID {
+			continue
+		}
+		records = append(records, model.ChunkRecord{
+			FileID:      fileID,
+			ChunkIndex:  idx,
+			SenderID:    entry.SenderID,
+			RecipientID: entry.RecipientID,
+			Hash:        entry.Hash,
+			PeerID:      entry.PeerID,
+			Persist:     entry.Persist,
+			Confirmed:   entry.Confirmed,
+			Readed:      entry.Readed,
+			CreatedAt:   entry.CreatedAt,
+			TTL:         entry.TTL,
 		})
 	}
 	if records == nil {
@@ -535,6 +621,24 @@ func (s *MemoryStore) GetBestThickPeers(_ context.Context, n int) ([]model.Peer,
 		n = len(active)
 	}
 	return active[:n], nil
+}
+
+func (s *MemoryStore) DeleteExpiredChunks(_ context.Context) (int64, error) {
+	now := time.Now().Unix()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	kept := s.chunks[:0]
+	var deleted int64
+	for _, entry := range s.chunks {
+		if !entry.Persist && entry.CreatedAt+int64(entry.TTL) < now {
+			deleted++
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	s.chunks = kept
+	return deleted, nil
 }
 
 // SetPeerScore sets the quality score for a peer. Exported for testing.

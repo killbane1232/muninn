@@ -65,10 +65,13 @@ type Store interface {
 	GetBestPeers(ctx context.Context, n int) ([]model.Peer, error)
 	ReportChunk(ctx context.Context, sourcePeerID string, req model.ChunkReportRequest) (model.ChunkReportResult, error)
 	ConfirmChunk(ctx context.Context, req model.ConfirmChunkRequest) (model.ConfirmChunkResult, error)
-	GetChunksByRecipient(ctx context.Context, recipientID string) ([]model.ChunkRecord, error)
+	ReadChunk(ctx context.Context, req model.ReadChunkRequest) (model.ReadChunkResult, error)
+	GetChunksByRecipient(ctx context.Context, recipientID string, dateFrom int64) ([]model.ChunkRecord, error)
+	GetChunksByFileID(ctx context.Context, fileID string) ([]model.ChunkRecord, error)
 
 	GetBestThickPeers(ctx context.Context, n int) ([]model.Peer, error)
 
 	SetSignal(ctx context.Context, peerID string, sig model.Signal) error
 	PollSignals(ctx context.Context, peerID string) ([]model.Signal, error)
+	DeleteExpiredChunks(ctx context.Context) (int64, error)
 }

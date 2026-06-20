@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"time"
 
@@ -11,7 +13,9 @@ import (
 
 type Server struct {
 	*http.Server
-	RTC *webrtc.Handler
+	RTC     *webrtc.Handler
+	store   store.Store
+	cfg     Config
 }
 
 type Config struct {
@@ -28,7 +32,7 @@ func DefaultConfig() Config {
 		ReadTimeout:     10 * time.Second,
 		WriteTimeout:    10 * time.Second,
 		ShutdownTimeout: 15 * time.Second,
-		PurgeInterval:   30 * time.Second,
+		PurgeInterval:   1 * time.Hour,
 	}
 }
 
@@ -51,18 +55,43 @@ func NewServer(cfg Config, st store.Store) *Server {
 	mux.HandleFunc("POST /api/v1/chunks/confirm-batch", pb.ConfirmChunkBatch)
 	mux.HandleFunc("PUT /api/v1/files/{file_id}/chunks/{index}", pb.RegisterChunk)
 	mux.HandleFunc("POST /api/v1/files/{file_id}/chunks", pb.RegisterChunkBatch)
+	mux.HandleFunc("GET /api/v1/files/{file_id}/chunks", pb.GetChunksByFileID)
 	mux.HandleFunc("GET /api/v1/recipient/{recipient_id}/chunks", pb.GetChunksByRecipient)
 	mux.HandleFunc("POST /api/v1/peers/{id}/signals", pb.SetSignal)
 	mux.HandleFunc("GET /api/v1/peers/{id}/signals", pb.PollSignals)
 	mux.HandleFunc("POST /api/v1/webrtc/bootstrap", rtc.Bootstrap)
+	mux.HandleFunc("POST /api/v1/chunks/read", pb.ReadChunk)
 
-	return &Server{
+	srv := &Server{
 		Server: &http.Server{
 			Addr:         cfg.Addr,
 			Handler:      mux,
 			ReadTimeout:  cfg.ReadTimeout,
 			WriteTimeout: cfg.WriteTimeout,
 		},
-		RTC: rtc,
+		RTC:   rtc,
+		store: st,
+		cfg:   cfg,
 	}
+
+	srv.startChunkCleaner(cfg.PurgeInterval)
+	return srv
+}
+
+func (s *Server) startChunkCleaner(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			n, err := s.store.DeleteExpiredChunks(context.Background())
+			if err != nil {
+				log.Printf("chunk cleanup: %v", err)
+			} else if n > 0 {
+				log.Printf("chunk cleanup: removed %d expired chunks", n)
+			}
+		}
+	}()
 }

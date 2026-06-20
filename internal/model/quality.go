@@ -14,6 +14,7 @@ type RegisterChunkRequest struct {
 	Signature   string `json:"signature"`
 	PeerID      string `json:"peer_id"`
 	Persist     bool   `json:"persist"`
+	TTL         int    `json:"ttl,omitempty"`
 }
 
 type RegisterChunkBatchEntry struct {
@@ -24,6 +25,7 @@ type RegisterChunkBatchEntry struct {
 	Signature   string `json:"signature"`
 	PeerID      string `json:"peer_id"`
 	Persist     bool   `json:"persist"`
+	TTL         int    `json:"ttl,omitempty"`
 }
 
 type RegisterChunkBatchRequest struct {
@@ -39,6 +41,9 @@ type ChunkRecord struct {
 	PeerID      string `json:"peer_id"`
 	Persist     bool   `json:"persist"`
 	Confirmed   bool   `json:"confirmed"`
+	Readed      bool   `json:"readed,omitempty"`
+	CreatedAt   int64  `json:"created_at"`
+	TTL         int    `json:"ttl"`
 }
 
 // ChunkReportRequest — отчёт получателя о чанке от source peer.
@@ -68,6 +73,13 @@ type ConfirmChunkRequest struct {
 	Signature   string `json:"signature"`
 }
 
+// ReadChunkRequest — подтверждение прочтения сообщения получателем.
+type ReadChunkRequest struct {
+	RecipientID string `json:"recipient_id"`
+	FileID      string `json:"file_id"`
+	Signature   string `json:"signature"`
+}
+
 type ConfirmChunkBatchEntry struct {
 	FileID     string `json:"file_id"`
 	ChunkIndex int    `json:"chunk_index"`
@@ -87,6 +99,11 @@ type ConfirmChunkResult struct {
 	ConfirmedHash string `json:"confirmed_hash"`
 	Delta         int    `json:"delta"`
 	Peer          Peer   `json:"peer"`
+}
+
+// ConfirmChunkResult — результат чтения и обновлённый узел.
+type ReadChunkResult struct {
+	Valid         bool   `json:"valid"`
 }
 
 // Signal — WebRTC signal для пира.
