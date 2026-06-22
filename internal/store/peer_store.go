@@ -84,17 +84,12 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 		_, err = tx.ExecContext(ctx,
 			`UPDATE peers SET
 				addresses = $1,
-				encryption_key = CASE WHEN $2 = '' THEN encryption_key ELSE $2 END,
-				signature_key = CASE WHEN $3 = '' THEN signature_key ELSE $3 END,
-				metadata = $4,
-				last_seen = $5,
-				ttl_seconds = $6,
-				peer_flag = CASE WHEN $8 = '' THEN peer_flag ELSE $8 END,
-				fake = CASE WHEN $9 IS NOT NULL THEN $9 ELSE fake END
-			 WHERE id = $7`,
-			jsonString(req.Addresses), strings.TrimSpace(req.EncryptionKey),
-			strings.TrimSpace(req.SignatureKey),
-			jsonString(req.Metadata), nowUnix, ttl, id, peerFlag, req.Fake,
+				metadata = $2,
+				last_seen = $3,
+				ttl_seconds = $4,
+				peer_flag = CASE WHEN $6 = '' THEN peer_flag ELSE $6 END
+			 WHERE id = $5`,
+			jsonString(req.Addresses), jsonString(req.Metadata), nowUnix, ttl, id, peerFlag,
 		)
 	}
 	if err != nil {
