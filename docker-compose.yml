@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 15g
+    environment:
+      POSTGRES_DB: muninn
+      POSTGRES_USER: muninn
+      POSTGRES_PASSWORD: muninn
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U muninn"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  muninn:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      MUNINN_ADDR: ":8080"
+      MUNINN_STORE_DRIVER: postgres
+      MUNINN_STORE_DSN: "postgres://muninn:muninn@postgres:5432/muninn?sslmode=disable"
+      MUNINN_PURGE_INTERVAL: 1h
+      MUNINN_ICE_SERVERS_PATH: /etc/muninn/ice_servers.json
+    volumes:
+      - ./ice_servers.json:/etc/muninn/ice_servers.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  turn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+    depends_on:
+      - muninn

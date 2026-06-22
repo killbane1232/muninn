@@ -68,15 +68,41 @@ type Handler struct {
 	config pion.Configuration
 }
 
-func NewHandler(st store.Store) *Handler {
+func NewHandler(st store.Store, iceServers []pion.ICEServer) *Handler {
+	if iceServers == nil {
+		iceServers = defaultICEServers()
+	}
 	return &Handler{
 		store: st,
 		peers: make(map[string]*peerConn),
 		config: pion.Configuration{
-			ICEServers: []pion.ICEServer{
-				{URLs: []string{"stun:stun.l.google.com:19302"}},
-			},
+			ICEServers: iceServers,
 		},
+	}
+}
+
+func defaultICEServers() []pion.ICEServer {
+	return []pion.ICEServer{
+		{URLs: []string{"stun:stun.l.google.com:19302"}},
+		{URLs: []string{"stun:stun1.l.google.com:19302"}},
+		{URLs: []string{"stun:stun2.l.google.com:19302"}},
+		{URLs: []string{"stun:stun3.l.google.com:19302"}},
+		{URLs: []string{"stun:stun4.l.google.com:19302"}},
+		{URLs: []string{"stun:stun.ekiga.net"}},
+		{URLs: []string{"stun:stun.fwdnet.net"}},
+		{URLs: []string{"stun:stun01.sipphone.com"}},
+		{URLs: []string{"stun:stun.ideasip.com"}},
+		{URLs: []string{"stun:stun.iptel.org"}},
+		{URLs: []string{"stun:stun.rixtelecom.se"}},
+		{URLs: []string{"stun:stun.schlund.de"}},
+		{URLs: []string{"stun:stunserver.org"}},
+		{URLs: []string{"stun:stun.softjoys.com"}},
+		{URLs: []string{"stun:stun.voiparound.com"}},
+		{URLs: []string{"stun:stun.voipbuster.com"}},
+		{URLs: []string{"stun:stun.voipstunt.com"}},
+		{URLs: []string{"stun:stun.voxgratia.org"}},
+		{URLs: []string{"stun:stun.xten.com"}},
+		{URLs: []string{"stun:stun.rtc.yandex.net"}},
 	}
 }
 
