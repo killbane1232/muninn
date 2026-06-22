@@ -47,3 +47,5 @@ services:
       - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
     depends_on:
       - muninn
+volumes:
+  pgdata:

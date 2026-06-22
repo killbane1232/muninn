@@ -19,6 +19,9 @@ jobs:
   publish:
     needs: test
     if: github.event_name == 'push'
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,9 +40,9 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.arch }}
           tags: |
-            ghcr.io/${{ github.repository }}:${{ github.run_number }}
-            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:muninn-${{ matrix.arch }}-${{ github.run_number }}
+            ghcr.io/${{ github.repository }}:muninn-${{ matrix.arch }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
