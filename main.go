@@ -20,7 +20,7 @@ import (
 
 func main() {
 	now := time.Now().Unix()
-	log.Printf("Time now: %s", now)
+	log.Printf("Time now: %d", now)
 	cfg := api.DefaultConfig()
 	if v := os.Getenv("MUNINN_ADDR"); v != "" {
 		cfg.Addr = v
