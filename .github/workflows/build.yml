@@ -42,7 +42,7 @@ jobs:
           push: true
           platforms: linux/${{ matrix.arch }}
           tags: |
-            ghcr.io/${{ github.repository }}:muninn-${{ matrix.arch }}-${{ github.run_number }}
+            ghcr.io/${{ github.repository }}:${{ github.run_number }}-${{ matrix.arch }}
             ghcr.io/${{ github.repository }}:latest-${{ matrix.arch }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
