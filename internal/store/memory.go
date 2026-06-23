@@ -33,6 +33,7 @@ type chunkRecordEntry struct {
 	Confirmed   bool
 	Readed      bool
 	CreatedAt   int64
+	UpdatedAt   int64
 	TTL         int
 }
 
@@ -299,6 +300,7 @@ func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex 
 	if chunkTTL <= 0 {
 		chunkTTL = defaultChunkTTL
 	}
+	now := time.Now().Unix()
 	s.chunks = append(s.chunks, chunkRecordEntry{
 		key:         key,
 		Hash:        hash,
@@ -307,7 +309,8 @@ func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex 
 		PeerID:      peerID,
 		Persist:     req.Persist,
 		Confirmed:   false,
-		CreatedAt:   time.Now().Unix(),
+		CreatedAt:   now,
+		UpdatedAt:   now,
 		TTL:         chunkTTL,
 	})
 	return nil
@@ -421,6 +424,7 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 		delta = QualityPointsValid
 		senderPeer.Quality.ValidReports++
 		entry.Confirmed = true
+		entry.UpdatedAt = time.Now().Unix()
 	} else {
 		senderPeer.Quality.InvalidReports++
 	}
@@ -458,11 +462,13 @@ func (s *MemoryStore) ReadChunk(_ context.Context, req model.ReadChunkRequest) (
 	}
 
 	marked := false
+	now := time.Now().Unix()
 	for i := range s.chunks {
 		if s.chunks[i].RecipientID == recipientID {
 			file, _ := parseChunkKey(s.chunks[i].key)
 			if file == fileID {
 				s.chunks[i].Readed = true
+				s.chunks[i].UpdatedAt = now
 				marked = true
 			}
 		}
@@ -486,7 +492,7 @@ func (s *MemoryStore) GetChunksByRecipient(_ context.Context, recipientID string
 
 	var records []model.ChunkRecord
 	for _, entry := range s.chunks {
-		if entry.RecipientID != recipientID || entry.CreatedAt < dateFrom {
+		if entry.RecipientID != recipientID || entry.UpdatedAt < dateFrom {
 			continue
 		}
 		fileID, idx := parseChunkKey(entry.key)
@@ -501,6 +507,7 @@ func (s *MemoryStore) GetChunksByRecipient(_ context.Context, recipientID string
 			Confirmed:   entry.Confirmed,
 			Readed:      entry.Readed,
 			CreatedAt:   entry.CreatedAt,
+			UpdatedAt:   entry.UpdatedAt,
 			TTL:         entry.TTL,
 		})
 	}
@@ -536,6 +543,7 @@ func (s *MemoryStore) GetChunksByFileID(_ context.Context, fileID string) ([]mod
 			Confirmed:   entry.Confirmed,
 			Readed:      entry.Readed,
 			CreatedAt:   entry.CreatedAt,
+			UpdatedAt:   entry.UpdatedAt,
 			TTL:         entry.TTL,
 		})
 	}

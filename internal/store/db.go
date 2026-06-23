@@ -87,7 +87,7 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 	}
 	now := time.Now().Unix()
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO chunks (file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed, created_at, ttl) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9)`,
+		`INSERT INTO chunks (file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed, created_at, updated_at, ttl) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $8, $9)`,
 		fileID, chunkIndex, hash, senderID, recipientID, peerID, persist, now, chunkTTL,
 	)
 	if err != nil {
@@ -103,7 +103,7 @@ func (s *dbStore) GetChunksByRecipient(ctx context.Context, recipientID string, 
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed, readed, created_at, ttl FROM chunks WHERE recipient_id = $1 AND created_at >= $2`, recipientID, dateFrom,
+		`SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed, readed, created_at, updated_at, ttl FROM chunks WHERE recipient_id = $1 AND updated_at >= $2`, recipientID, dateFrom,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get chunks by recipient: %w", err)
@@ -115,7 +115,7 @@ func (s *dbStore) GetChunksByRecipient(ctx context.Context, recipientID string, 
 		var rec model.ChunkRecord
 		var peerID string
 		var persist, confirmed, readed int
-		if err := rows.Scan(&rec.FileID, &rec.ChunkIndex, &rec.Hash, &rec.SenderID, &rec.RecipientID, &peerID, &persist, &confirmed, &readed, &rec.CreatedAt, &rec.TTL); err != nil {
+		if err := rows.Scan(&rec.FileID, &rec.ChunkIndex, &rec.Hash, &rec.SenderID, &rec.RecipientID, &peerID, &persist, &confirmed, &readed, &rec.CreatedAt, &rec.UpdatedAt, &rec.TTL); err != nil {
 			return nil, fmt.Errorf("scan chunk: %w", err)
 		}
 		rec.PeerID = peerID
@@ -137,7 +137,7 @@ func (s *dbStore) GetChunksByFileID(ctx context.Context, fileID string) ([]model
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed, readed, created_at, ttl FROM chunks WHERE file_id = $1`, fileID,
+		`SELECT file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed, readed, created_at, updated_at, ttl FROM chunks WHERE file_id = $1`, fileID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get chunks by recipient: %w", err)
@@ -149,7 +149,7 @@ func (s *dbStore) GetChunksByFileID(ctx context.Context, fileID string) ([]model
 		var rec model.ChunkRecord
 		var peerID string
 		var persist, confirmed, readed int
-		if err := rows.Scan(&rec.FileID, &rec.ChunkIndex, &rec.Hash, &rec.SenderID, &rec.RecipientID, &peerID, &persist, &confirmed, &readed, &rec.CreatedAt, &rec.TTL); err != nil {
+		if err := rows.Scan(&rec.FileID, &rec.ChunkIndex, &rec.Hash, &rec.SenderID, &rec.RecipientID, &peerID, &persist, &confirmed, &readed, &rec.CreatedAt, &rec.UpdatedAt, &rec.TTL); err != nil {
 			return nil, fmt.Errorf("scan chunk: %w", err)
 		}
 		rec.PeerID = peerID
@@ -278,9 +278,14 @@ func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkReques
 	}
 
 	if valid {
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE chunks SET confirmed = 1 WHERE file_id = $1 AND chunk_index = $2 AND (recipient_id = $3 OR holder_peer_id = $3)`, fileID, req.ChunkIndex, recipientID,
-		); err != nil {
+		var stmt string
+		switch s.driver {
+		case "pgx":
+			stmt = `UPDATE chunks SET confirmed = 1, updated_at = extract(epoch from now()) WHERE file_id = $1 AND chunk_index = $2 AND (recipient_id = $3 OR holder_peer_id = $3)`
+		case "sqlite":
+			stmt = `UPDATE chunks SET confirmed = 1, updated_at = unixepoch() WHERE file_id = $1 AND chunk_index = $2 AND (recipient_id = $3 OR holder_peer_id = $3)`
+		}
+		if _, err := s.db.ExecContext(ctx, stmt, fileID, req.ChunkIndex, recipientID); err != nil {
 			return model.ConfirmChunkResult{}, fmt.Errorf("update confirmed: %w", err)
 		}
 	}
@@ -317,9 +322,14 @@ func (s *dbStore) ReadChunk(ctx context.Context, req model.ReadChunkRequest) (mo
 		return model.ReadChunkResult{}, err
 	}
 
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE chunks SET readed = 1 WHERE file_id = $1 AND recipient_id = $2`, fileID, recipientID,
-	); err != nil {
+	var readStmt string
+	switch s.driver {
+	case "pgx":
+		readStmt = `UPDATE chunks SET readed = 1, updated_at = extract(epoch from now()) WHERE file_id = $1 AND recipient_id = $2`
+	case "sqlite":
+		readStmt = `UPDATE chunks SET readed = 1, updated_at = unixepoch() WHERE file_id = $1 AND recipient_id = $2`
+	}
+	if _, err := s.db.ExecContext(ctx, readStmt, fileID, recipientID); err != nil {
 		return model.ReadChunkResult{}, fmt.Errorf("update readed: %w", err)
 	}
 
