@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -63,7 +64,9 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 	recipientID := strings.TrimSpace(req.RecipientID)
 	peerID := strings.TrimSpace(req.PeerID)
 	hash := normalizeHash(req.Hash)
-	if fileID == "" || senderID == ""  || peerID == "" || hash == "" || !validHashFormat(hash) || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
+	log.Printf("SetChunkHash: file=%s idx=%d sender=%s recipient=%s peer=%s hash=%s persist=%v",
+		fileID, chunkIndex, senderID, recipientID, peerID, hash, req.Persist)
+	if fileID == "" || senderID == "" || peerID == "" || hash == "" || !validHashFormat(hash) || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
 		return ErrInvalidChunk
 	}
 
