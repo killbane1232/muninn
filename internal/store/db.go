@@ -67,16 +67,19 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 	log.Printf("SetChunkHash: file=%s idx=%d senderKey=%s recipientKey=%s peer=%s hash=%s persist=%v",
 		fileID, chunkIndex, senderKey, recipientKey, peerID, hash, req.Persist)
 	if fileID == "" || senderKey == "" || peerID == "" || hash == "" || !validHashFormat(hash) || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
+		log.Printf("Invalid Chunk file=%s", fileID)
 		return ErrInvalidChunk
 	}
 
 	senders, err := s.getPeerByKey(ctx, senderKey)
 	if err != nil {
+		log.Printf("peer=%s not found", senderKey)
 		return ErrNotFound
 	}
 
 	msg := sign.ExpectedPayload(fileID, chunkIndex, hash)
 	if err := verifyPeerSignature(senders[0], req.Signature, msg); err != nil {
+		log.Printf("wrong signature on file=%s", fileID)
 		return err
 	}
 
@@ -94,6 +97,7 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 		fileID, chunkIndex, hash, senderKey, recipientKey, peerID, persist, now, chunkTTL,
 	)
 	if err != nil {
+		log.Printf("set chunk hash: %w", err)
 		return fmt.Errorf("set chunk hash: %w", err)
 	}
 	return nil
