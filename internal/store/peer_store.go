@@ -18,7 +18,7 @@ var SELECT = `
 SELECT 
 id, key, addresses, encryption_key, signature_key, metadata, 
 last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, 
-peer_flag, fake FROM peers
+peer_flag, is_fake FROM peers
 `
 
 func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.Peer, error) {
@@ -84,7 +84,7 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 
 	if isNew {
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO peers (id, key, addresses, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag, fake)
+			`INSERT INTO peers (id, key, addresses, encryption_key, signature_key, metadata, last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, peer_flag, is_fake)
 			 VALUES ($1, $13, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, 0))`,
 			id, jsonString(req.Addresses),
 			encKey, sigKey, jsonString(req.Metadata), nowUnix, ttl,
@@ -299,7 +299,7 @@ func (s *dbStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *dbStore) List(ctx context.Context) ([]model.Peer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM peers WHERE fake = 0`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM peers WHERE is_fake = 0`)
 	if err != nil {
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
@@ -351,7 +351,7 @@ func (s *dbStore) GetBestPeers(ctx context.Context, n int) ([]model.Peer, error)
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, quality_score, peer_flag FROM peers WHERE fake = 0`,
+		`SELECT id, quality_score, peer_flag FROM peers WHERE is_fake = 0`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get best peers: %w", err)
@@ -440,7 +440,7 @@ func (s *dbStore) GetBestThickPeers(ctx context.Context, n int) ([]model.Peer, e
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM peers WHERE peer_flag IN ('thick', 'very_thick') AND fake = 0`,
+		`SELECT id FROM peers WHERE peer_flag IN ('thick', 'very_thick') AND is_fake = 0`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get best thick peers: %w", err)
