@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS peers (
     id TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
     addresses TEXT NOT NULL,
     encryption_key TEXT NOT NULL DEFAULT '',
     signature_key TEXT NOT NULL DEFAULT '',
@@ -8,13 +9,9 @@ CREATE TABLE IF NOT EXISTS peers (
     ttl_seconds INTEGER NOT NULL DEFAULT 300,
     quality_score INTEGER NOT NULL DEFAULT 1000,
     quality_valid INTEGER NOT NULL DEFAULT 0,
-    quality_invalid INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS peer_keys (
-    login TEXT NOT NULL,
-    signature TEXT NOT NULL,
-    peer_id TEXT NOT NULL REFERENCES peers(id) ON DELETE CASCADE,
-    PRIMARY KEY (login, signature)
+    quality_invalid INTEGER NOT NULL DEFAULT 0,
+    peer_flag TEXT NOT NULL DEFAULT 'thin',
+    is_fake INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS chunks (
     file_id TEXT NOT NULL,

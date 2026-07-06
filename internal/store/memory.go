@@ -18,7 +18,7 @@ const defaultTTL = 300
 type MemoryStore struct {
 	mu                sync.RWMutex
 	peers             map[string]model.Peer
-	logins            map[string]map[string]string
+	logins            map[string][]string
 	chunks            []chunkRecordEntry
 	signals           map[string][]model.Signal
 }
@@ -40,7 +40,7 @@ type chunkRecordEntry struct {
 func NewMemory() *MemoryStore {
 	return &MemoryStore{
 		peers:   make(map[string]model.Peer),
-		logins:  make(map[string]map[string]string),
+		logins:  make(map[string][]string),
 		signals: make(map[string][]model.Signal),
 	}
 }
@@ -53,14 +53,8 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 	if len(req.Addresses) == 0 {
 		return model.Peer{}, ErrInvalidPeer
 	}
-	if len(req.Keys) == 0 {
-		return model.Peer{}, ErrInvalidPeer
-	}
 
-	keys := copyKeys(req.Keys)
-	if len(keys) == 0 {
-		return model.Peer{}, ErrInvalidKey
-	}
+	key := strings.TrimSpace(req.Login)+":"+strings.TrimSpace(req.SignatureKey)
 
 	ttl := req.TTLSeconds
 	if ttl <= 0 {
@@ -70,7 +64,7 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 	now := time.Now().UTC()
 	peer := model.Peer{
 		ID:            id,
-		Keys:          keys,
+		Key:           key,
 		Addresses:     copyStrings(req.Addresses),
 		EncryptionKey: strings.TrimSpace(req.EncryptionKey),
 		SignatureKey:  strings.TrimSpace(req.SignatureKey),
@@ -83,7 +77,6 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 	defer s.mu.Unlock()
 
 	if existing, ok := s.peers[id]; ok {
-		s.removePeerKeysLocked(existing.ID, existing.Keys)
 		peer.QualityScore = existing.QualityScore
 		peer.Quality = existing.Quality
 		peer.PeerFlag = existing.PeerFlag
@@ -93,6 +86,7 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 		peer.Fake = existing.Fake
 		peer.EncryptionKey = existing.EncryptionKey
 		peer.SignatureKey = existing.SignatureKey
+		s.logins[existing.Key] = removeID(s.logins[existing.Key], id)
 	} else {
 		peer.QualityScore = InitialQualityScore
 		peer.PeerFlag = req.PeerFlag
@@ -101,18 +95,7 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 		}
 	}
 
-	for _, k := range keys {
-		sigs, ok := s.logins[k.Login]
-		if ok {
-			if owner, exists := sigs[k.Signature]; exists && owner != id {
-				return model.Peer{}, ErrKeyTaken
-			}
-		} else {
-			s.logins[k.Login] = make(map[string]string)
-		}
-		s.logins[k.Login][k.Signature] = id
-	}
-
+	s.logins[key] = append(s.logins[key], id)
 	s.peers[id] = peer
 	return peer, nil
 }
@@ -128,29 +111,33 @@ func (s *MemoryStore) Get(_ context.Context, id string) (model.Peer, error) {
 	return peer, nil
 }
 
-func (s *MemoryStore) GetByKey(_ context.Context, login string, signature string) (model.Peer, error) {
+func (s *MemoryStore) GetByKey(_ context.Context, login string, signature string) ([]model.Peer, error) {
 	login = strings.TrimSpace(login)
 	signature = strings.TrimSpace(signature)
 	if login == "" || signature == "" {
-		return model.Peer{}, ErrInvalidKey
+		return nil, ErrInvalidKey
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	sigs, ok := s.logins[login]
+	ids, ok := s.logins[login + ":" + signature]
 	if !ok {
-		return model.Peer{}, ErrNotFound
+		return nil, ErrNotFound
 	}
-	id, ok := sigs[signature]
-	if !ok {
-		return model.Peer{}, ErrNotFound
+	now := time.Now().UTC()
+	var out []model.Peer
+	for _, id := range ids {
+		peer, ok := s.peers[id]
+		if !ok || s.isExpired(peer, now) {
+			continue
+		}
+		out = append(out, peer)
 	}
-	peer, ok := s.peers[id]
-	if !ok || s.isExpired(peer, time.Now().UTC()) {
-		return model.Peer{}, ErrNotFound
+	if out == nil {
+		return nil, ErrNotFound
 	}
-	return peer, nil
+	return out, nil
 }
 
 func (s *MemoryStore) Delete(_ context.Context, id string) error {
@@ -161,7 +148,7 @@ func (s *MemoryStore) Delete(_ context.Context, id string) error {
 	if !ok {
 		return ErrNotFound
 	}
-	s.removePeerKeysLocked(id, peer.Keys)
+	s.logins[peer.Key] = removeID(s.logins[peer.Key], id)
 	delete(s.peers, id)
 	return nil
 }
@@ -231,37 +218,6 @@ func (s *MemoryStore) isExpired(peer model.Peer, now time.Time) bool {
 	return now.Sub(peer.LastSeen) > time.Duration(ttl)*time.Second
 }
 
-func (s *MemoryStore) removePeerKeysLocked(peerID string, keys []model.Key) {
-	for _, k := range keys {
-		sigs, ok := s.logins[k.Login]
-		if ok {
-			delete(sigs, k.Signature)
-			if len(sigs) == 0 {
-				delete(s.logins, k.Login)
-			}
-		}
-	}
-}
-
-func copyKeys(in []model.Key) []model.Key {
-	out := make([]model.Key, 0, len(in))
-	seen := make(map[string]bool)
-	for _, k := range in {
-		login := strings.TrimSpace(k.Login)
-		sig := strings.TrimSpace(k.Signature)
-		if login == "" || sig == "" {
-			continue
-		}
-		key := login + "\x00" + sig
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, model.Key{Login: login, Signature: sig})
-	}
-	return out
-}
-
 func copyStrings(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, a := range in {
@@ -275,18 +231,18 @@ func copyStrings(in []string) []string {
 
 func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex int, req model.RegisterChunkRequest) error {
 	fileID = strings.TrimSpace(fileID)
-	senderID := strings.TrimSpace(req.SenderID)
-	recipientID := strings.TrimSpace(req.RecipientID)
+	senderKey := strings.TrimSpace(req.SenderID)
+	recipientKey := strings.TrimSpace(req.RecipientID)
 	peerID := strings.TrimSpace(req.PeerID)
 	hash := normalizeHash(req.Hash)
-	if fileID == "" || senderID == "" || recipientID == "" || peerID == "" || hash == "" || !validHashFormat(hash) || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
+	if fileID == "" || senderKey == "" || recipientKey == "" || peerID == "" || hash == "" || !validHashFormat(hash) || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
 		return ErrInvalidChunk
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	sender, ok := s.peers[senderID]
+	sender, ok := s.peerByKey(senderKey)
 	if !ok {
 		return ErrNotFound
 	}
@@ -295,17 +251,17 @@ func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex 
 		return err
 	}
 
-	key := chunkKey(fileID, chunkIndex)
+	chunkKey := chunkKey(fileID, chunkIndex)
 	chunkTTL := req.TTL
 	if chunkTTL <= 0 {
 		chunkTTL = defaultChunkTTL
 	}
 	now := time.Now().Unix()
 	s.chunks = append(s.chunks, chunkRecordEntry{
-		key:         key,
+		key:         chunkKey,
 		Hash:        hash,
-		SenderID:    senderID,
-		RecipientID: recipientID,
+		SenderID:    senderKey,
+		RecipientID: recipientKey,
 		PeerID:      peerID,
 		Persist:     req.Persist,
 		Confirmed:   false,
@@ -378,11 +334,11 @@ func (s *MemoryStore) ReportChunk(_ context.Context, sourcePeerID string, req mo
 }
 
 func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequest) (model.ConfirmChunkResult, error) {
-	recipientID := strings.TrimSpace(req.RecipientID)
+	recipientKey := strings.TrimSpace(req.RecipientID)
 	fileID := strings.TrimSpace(req.FileID)
 	confirmed := normalizeHash(req.Hash)
 
-	if recipientID == "" || fileID == "" || confirmed == "" || !validHashFormat(confirmed) || req.ChunkIndex < 0 ||
+	if recipientKey == "" || fileID == "" || confirmed == "" || !validHashFormat(confirmed) || req.ChunkIndex < 0 ||
 		strings.TrimSpace(req.Signature) == "" {
 		return model.ConfirmChunkResult{}, ErrInvalidChunk
 	}
@@ -392,7 +348,7 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	recipient, ok := s.peers[recipientID]
+	recipient, ok := s.peerByKey(recipientKey)
 	if !ok {
 		return model.ConfirmChunkResult{}, ErrNotFound
 	}
@@ -403,7 +359,7 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 
 	var entry *chunkRecordEntry
 	for i := range s.chunks {
-		if s.chunks[i].key == key && (s.chunks[i].RecipientID == recipientID || s.chunks[i].PeerID == recipientID || s.chunks[i].Persist) {
+		if s.chunks[i].key == key && s.chunks[i].RecipientID == recipientKey {
 			entry = &s.chunks[i]
 			break
 		}
@@ -412,8 +368,7 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 		return model.ConfirmChunkResult{}, ErrChunkNotFound
 	}
 
-	var senderPeer model.Peer
-	senderPeer, ok = s.peers[entry.SenderID]
+	senderPeer, ok := s.peerByKey(entry.SenderID)
 	if !ok {
 		return model.ConfirmChunkResult{}, ErrNotFound
 	}
@@ -429,7 +384,7 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 		senderPeer.Quality.InvalidReports++
 	}
 	senderPeer.QualityScore += delta
-	s.peers[entry.SenderID] = senderPeer
+	s.peers[senderPeer.ID] = senderPeer
 
 	return model.ConfirmChunkResult{
 		Valid:         valid,
@@ -441,7 +396,7 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 }
 
 func (s *MemoryStore) ReadChunk(_ context.Context, req model.ReadChunkRequest) (model.ReadChunkResult, error) {
-	recipientID := strings.TrimSpace(req.RecipientID)
+	recipientKey := strings.TrimSpace(req.RecipientID)
 	fileID := strings.TrimSpace(req.FileID)
 
 	if fileID == "" || strings.TrimSpace(req.Signature) == "" {
@@ -451,7 +406,7 @@ func (s *MemoryStore) ReadChunk(_ context.Context, req model.ReadChunkRequest) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	recipient, ok := s.peers[recipientID]
+	recipient, ok := s.peerByKey(recipientKey)
 	if !ok {
 		return model.ReadChunkResult{}, ErrNotFound
 	}
@@ -464,9 +419,9 @@ func (s *MemoryStore) ReadChunk(_ context.Context, req model.ReadChunkRequest) (
 	marked := false
 	now := time.Now().Unix()
 	for i := range s.chunks {
-		if s.chunks[i].RecipientID == recipientID {
-			file, _ := parseChunkKey(s.chunks[i].key)
-			if file == fileID {
+		if s.chunks[i].RecipientID == recipientKey {
+			fid, _ := parseChunkKey(s.chunks[i].key)
+			if fid == fileID {
 				s.chunks[i].Readed = true
 				s.chunks[i].UpdatedAt = now
 				marked = true
@@ -660,4 +615,22 @@ func (s *MemoryStore) SetPeerScore(id string, score int) error {
 	p.QualityScore = score
 	s.peers[id] = p
 	return nil
+}
+
+func removeID(ids []string, id string) []string {
+	for i, v := range ids {
+		if v == id {
+			return append(ids[:i], ids[i+1:]...)
+		}
+	}
+	return ids
+}
+
+func (s *MemoryStore) peerByKey(key string) (model.Peer, bool) {
+	for _, peer := range s.peers {
+		if peer.Key == key && !s.isExpired(peer, time.Now().UTC()) {
+			return peer, true
+		}
+	}
+	return model.Peer{}, false
 }

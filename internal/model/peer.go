@@ -11,16 +11,10 @@ const (
 	PeerFlagVeryThick PeerFlag = "very_thick"
 )
 
-// Key — зашифрованный логин с подписью для идентификации пира.
-type Key struct {
-	Login     string `json:"login"`
-	Signature string `json:"signature"`
-}
-
 // Peer — запись в телефонной книге P2P-узла.
 type Peer struct {
 	ID            string            `json:"id"`
-	Keys          []Key             `json:"keys"`
+	Key           string            `json:"key"`
 	Addresses     []string          `json:"addresses"`
 	PublicKey     string            `json:"public_key,omitempty"`
 	EncryptionKey string            `json:"encryption_key,omitempty"`
@@ -31,13 +25,13 @@ type Peer struct {
 	QualityScore  int               `json:"quality_score"`
 	Quality       QualityStats      `json:"quality"`
 	PeerFlag      PeerFlag          `json:"peer_flag,omitempty"`
-	Fake          bool              `json:"fake,omitempty"`
+	Fake          bool              `json:"is_fake,omitempty"`
 }
 
 // RegisterRequest — тело запроса на регистрацию или обновление узла.
 type RegisterRequest struct {
 	ID            string            `json:"id"`
-	Keys          []Key             `json:"keys"`
+	Login         string            `json:"login"`
 	Addresses     []string          `json:"addresses"`
 	PublicKey     string            `json:"public_key,omitempty"`
 	EncryptionKey string            `json:"encryption_key,omitempty"`

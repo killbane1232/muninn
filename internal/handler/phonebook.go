@@ -58,12 +58,15 @@ func (h *Phonebook) GetByKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	peer, err := h.Store.GetByKey(r.Context(), login, signature)
+	peers, err := h.Store.GetByKey(r.Context(), login, signature)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, peer)
+	if peers == nil {
+		peers = []model.Peer{}
+	}
+	writeJSON(w, http.StatusOK, peers)
 }
 
 func (h *Phonebook) Delete(w http.ResponseWriter, r *http.Request) {

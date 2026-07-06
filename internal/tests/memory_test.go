@@ -15,7 +15,7 @@ func TestLifecycle(t *testing.T) {
 
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "alice", Addresses: []string{"192.168.1.10:9000"},
-		Keys: []model.Key{{Login: "login-alice", Signature: "sig-alice"}},
+		Login: "login-alice", SignatureKey: "sig-alice",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -27,9 +27,6 @@ func TestLifecycle(t *testing.T) {
 	}
 	if peer.ID != "alice" {
 		t.Fatalf("got id %q", peer.ID)
-	}
-	if len(peer.Keys) != 1 {
-		t.Fatalf("got %d keys, want 1", len(peer.Keys))
 	}
 
 	peers, err := s.List(ctx)
@@ -51,18 +48,18 @@ func TestGetByKey(t *testing.T) {
 
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Keys: []model.Key{{Login: "login-1", Signature: "sig-1"}},
+		Login: "login-1", SignatureKey: "sig-1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	peer, err := s.GetByKey(ctx, "login-1", "sig-1")
+	peers, err := s.GetByKey(ctx, "login-1", "sig-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if peer.ID != "node-1" {
-		t.Fatalf("got id %q", peer.ID)
+	if len(peers) != 1 || peers[0].ID != "node-1" {
+		t.Fatalf("got %+v", peers)
 	}
 
 	if _, err := s.GetByKey(ctx, "login-1", "wrong-sig"); err != store.ErrNotFound {
@@ -91,7 +88,7 @@ func TestKeyUniqueAcrossPeers(t *testing.T) {
 
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Keys: []model.Key{{Login: "same-login", Signature: "same-sig"}},
+		Login: "same-login", SignatureKey: "same-sig",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,10 +96,18 @@ func TestKeyUniqueAcrossPeers(t *testing.T) {
 
 	_, err = s.Upsert(ctx, model.RegisterRequest{
 		ID: "node-2", Addresses: []string{"10.0.0.2:1"},
-		Keys: []model.Key{{Login: "same-login", Signature: "same-sig"}},
+		Login: "same-login", SignatureKey: "same-sig",
 	})
-	if err != store.ErrKeyTaken {
-		t.Fatalf("expected ErrKeyTaken, got %v", err)
+	if err != nil {
+		t.Fatalf("expected ok, got %v", err)
+	}
+
+	peers, err := s.GetByKey(ctx, "same-login", "same-sig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peers) != 2 {
+		t.Fatalf("expected 2 peers, got %d", len(peers))
 	}
 }
 
@@ -112,7 +117,7 @@ func TestKeyReUpsertSamePeer(t *testing.T) {
 
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Keys: []model.Key{{Login: "login-1", Signature: "sig-1"}},
+		Login: "login-1", SignatureKey: "sig-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +125,7 @@ func TestKeyReUpsertSamePeer(t *testing.T) {
 
 	_, err = s.Upsert(ctx, model.RegisterRequest{
 		ID: "node-1", Addresses: []string{"10.0.0.1:2"},
-		Keys: []model.Key{{Login: "login-1", Signature: "sig-1"}},
+		Login: "login-1", SignatureKey: "sig-1",
 	})
 	if err != nil {
 		t.Fatalf("same peer re-upsert with same key should succeed: %v", err)
@@ -141,29 +146,30 @@ func TestMultipleKeysPerPeer(t *testing.T) {
 
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Keys: []model.Key{
-			{Login: "login-A", Signature: "sig-A"},
-			{Login: "login-B", Signature: "sig-B"},
-		},
+		Login: "login-A", SignatureKey: "sig-A",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	peer, err := s.GetByKey(ctx, "login-A", "sig-A")
+	_, err = s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
+		Login: "login-B", SignatureKey: "sig-B",
+	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if peer.ID != "node-1" {
-		t.Fatalf("got id %q", peer.ID)
 	}
 
-	peer, err = s.GetByKey(ctx, "login-B", "sig-B")
+	if _, err := s.GetByKey(ctx, "login-A", "sig-A"); err != store.ErrNotFound {
+		t.Fatal("got old key")
+	}
+
+	peers, err := s.GetByKey(ctx, "login-B", "sig-B")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if peer.ID != "node-1" {
-		t.Fatalf("got id %q", peer.ID)
+	if len(peers) != 1 || peers[0].ID != "node-1" {
+		t.Fatalf("got %+v", peers)
 	}
 }
 
@@ -173,15 +179,14 @@ func TestKeysReplacedOnReUpsert(t *testing.T) {
 
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Keys: []model.Key{{Login: "old-login", Signature: "old-sig"}},
-	})
+		Login: "old-login", SignatureKey: "old-sig",})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	_, err = s.Upsert(ctx, model.RegisterRequest{
 		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Keys: []model.Key{{Login: "new-login", Signature: "new-sig"}},
+		Login: "new-login", SignatureKey: "new-sig",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +207,7 @@ func TestKeyCollisionDifferentSignatures(t *testing.T) {
 
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Keys: []model.Key{{Login: "same-login", Signature: "sig-A"}},
+		Login: "same-login", SignatureKey: "sig-A",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -210,64 +215,26 @@ func TestKeyCollisionDifferentSignatures(t *testing.T) {
 
 	_, err = s.Upsert(ctx, model.RegisterRequest{
 		ID: "node-2", Addresses: []string{"10.0.0.2:1"},
-		Keys: []model.Key{{Login: "same-login", Signature: "sig-B"}},
+		Login: "same-login", SignatureKey: "sig-B",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	peer, err := s.GetByKey(ctx, "same-login", "sig-A")
+	peers, err := s.GetByKey(ctx, "same-login", "sig-A")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if peer.ID != "node-1" {
-		t.Fatalf("got %q, want node-1", peer.ID)
+	if len(peers) != 1 || peers[0].ID != "node-1" {
+		t.Fatalf("got %+v", peers)
 	}
 
-	peer, err = s.GetByKey(ctx, "same-login", "sig-B")
+	peers, err = s.GetByKey(ctx, "same-login", "sig-B")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if peer.ID != "node-2" {
-		t.Fatalf("got %q, want node-2", peer.ID)
-	}
-}
-
-func TestRegisterWithoutKeys(t *testing.T) {
-	ctx := context.Background()
-	s := store.NewMemory()
-
-	_, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-	})
-	if err != store.ErrInvalidPeer {
-		t.Fatalf("expected ErrInvalidPeer, got %v", err)
-	}
-}
-
-func TestRegisterWithEmptyKeys(t *testing.T) {
-	ctx := context.Background()
-	s := store.NewMemory()
-
-	_, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Keys: []model.Key{},
-	})
-	if err != store.ErrInvalidPeer {
-		t.Fatalf("expected ErrInvalidPeer, got %v", err)
-	}
-}
-
-func TestRegisterWithBlankKeyFields(t *testing.T) {
-	ctx := context.Background()
-	s := store.NewMemory()
-
-	_, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Keys: []model.Key{{Login: "", Signature: ""}},
-	})
-	if err != store.ErrInvalidKey {
-		t.Fatalf("expected ErrInvalidKey, got %v", err)
+	if len(peers) != 1 || peers[0].ID != "node-2" {
+		t.Fatalf("got %+v", peers)
 	}
 }
 
@@ -277,7 +244,7 @@ func TestInitialQualityScore(t *testing.T) {
 
 	peer, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "new-peer", Addresses: []string{"10.0.0.1:1"},
-		Keys: []model.Key{{Login: "login", Signature: "sig"}},
+		Login: "login", SignatureKey: "sig",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +255,7 @@ func TestInitialQualityScore(t *testing.T) {
 
 	peer2, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "new-peer", Addresses: []string{"10.0.0.1:2"},
-		Keys: []model.Key{{Login: "login", Signature: "sig"}},
+		Login: "login", SignatureKey: "sig",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +273,7 @@ func TestGetBestPeersCount(t *testing.T) {
 		id := fmt.Sprintf("peer-%d", i)
 		_, err := s.Upsert(ctx, model.RegisterRequest{
 			ID: id, Addresses: []string{"10.0.0.1:1"},
-			Keys: []model.Key{{Login: fmt.Sprintf("login-%d", i), Signature: fmt.Sprintf("sig-%d", i)}},
+			Login: fmt.Sprintf("login-%d", i), SignatureKey: fmt.Sprintf("sig-%d", i),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -342,7 +309,7 @@ func TestGetBestPeersOrdered(t *testing.T) {
 		id := fmt.Sprintf("peer-%d", i)
 		_, err := s.Upsert(ctx, model.RegisterRequest{
 			ID: id, Addresses: []string{"10.0.0.1:1"},
-			Keys: []model.Key{{Login: fmt.Sprintf("login-%d", i), Signature: fmt.Sprintf("sig-%d", i)}},
+			Login: fmt.Sprintf("login-%d", i), SignatureKey: fmt.Sprintf("sig-%d", i),
 		})
 		if err != nil {
 			t.Fatal(err)

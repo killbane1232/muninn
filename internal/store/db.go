@@ -60,23 +60,23 @@ func NewDB(driver, dsn string) (Store, error) {
 
 func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex int, req model.RegisterChunkRequest) error {
 	fileID = strings.TrimSpace(fileID)
-	senderID := strings.TrimSpace(req.SenderID)
-	recipientID := strings.TrimSpace(req.RecipientID)
+	senderKey := strings.TrimSpace(req.SenderID)
+	recipientKey := strings.TrimSpace(req.RecipientID)
 	peerID := strings.TrimSpace(req.PeerID)
 	hash := normalizeHash(req.Hash)
-	log.Printf("SetChunkHash: file=%s idx=%d sender=%s recipient=%s peer=%s hash=%s persist=%v",
-		fileID, chunkIndex, senderID, recipientID, peerID, hash, req.Persist)
-	if fileID == "" || senderID == "" || peerID == "" || hash == "" || !validHashFormat(hash) || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
+	log.Printf("SetChunkHash: file=%s idx=%d senderKey=%s recipientKey=%s peer=%s hash=%s persist=%v",
+		fileID, chunkIndex, senderKey, recipientKey, peerID, hash, req.Persist)
+	if fileID == "" || senderKey == "" || peerID == "" || hash == "" || !validHashFormat(hash) || chunkIndex < 0 || strings.TrimSpace(req.Signature) == "" {
 		return ErrInvalidChunk
 	}
 
-	sender, err := s.getPeerByID(ctx, senderID)
+	senders, err := s.getPeerByKey(ctx, senderKey)
 	if err != nil {
 		return ErrNotFound
 	}
 
 	msg := sign.ExpectedPayload(fileID, chunkIndex, hash)
-	if err := verifyPeerSignature(sender, req.Signature, msg); err != nil {
+	if err := verifyPeerSignature(senders[0], req.Signature, msg); err != nil {
 		return err
 	}
 
@@ -91,7 +91,7 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 	now := time.Now().Unix()
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO chunks (file_id, chunk_index, expected_hash, sender_id, recipient_id, holder_peer_id, persist, confirmed, created_at, updated_at, ttl) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $8, $9)`,
-		fileID, chunkIndex, hash, senderID, recipientID, peerID, persist, now, chunkTTL,
+		fileID, chunkIndex, hash, senderKey, recipientKey, peerID, persist, now, chunkTTL,
 	)
 	if err != nil {
 		return fmt.Errorf("set chunk hash: %w", err)
@@ -232,7 +232,7 @@ func (s *dbStore) ReportChunk(ctx context.Context, sourcePeerID string, req mode
 }
 
 func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkRequest) (model.ConfirmChunkResult, error) {
-	recipientID := strings.TrimSpace(req.RecipientID)
+	recipientKey := strings.TrimSpace(req.RecipientID)
 	fileID := strings.TrimSpace(req.FileID)
 	confirmed := normalizeHash(req.Hash)
 
@@ -241,20 +241,20 @@ func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkReques
 		return model.ConfirmChunkResult{}, ErrInvalidChunk
 	}
 
-	recipient, err := s.getPeerByID(ctx, recipientID)
+	recipients, err := s.getPeerByKey(ctx, recipientKey)
 	if err != nil {
 		return model.ConfirmChunkResult{}, ErrNotFound
 	}
 
 	msg := sign.ConfirmedPayload(fileID, req.ChunkIndex, confirmed)
-	if err := verifyPeerSignature(recipient, req.Signature, msg); err != nil {
+	if err := verifyPeerSignature(recipients[0], req.Signature, msg); err != nil {
 		return model.ConfirmChunkResult{}, err
 	}
 
-	var expectedHash, senderID string
+	var expectedHash, senderKey string
 	err = s.db.QueryRowContext(ctx,
-		`SELECT expected_hash, sender_id FROM chunks WHERE file_id = $1 AND chunk_index = $2 AND (recipient_id = $3 OR holder_peer_id = $3)`, fileID, req.ChunkIndex, recipientID,
-	).Scan(&expectedHash, &senderID)
+		`SELECT expected_hash, sender_id FROM chunks WHERE file_id = $1 AND chunk_index = $2 AND recipient_id = $3`, fileID, req.ChunkIndex, recipientKey,
+	).Scan(&expectedHash, &senderKey)
 	if err == sql.ErrNoRows {
 		return model.ConfirmChunkResult{}, ErrChunkNotFound
 	}
@@ -274,8 +274,8 @@ func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkReques
 	}
 
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE peers SET quality_score = quality_score + $1, quality_valid = quality_valid + $2, quality_invalid = quality_invalid + $3 WHERE id = $4`,
-		delta, qValidInc, qInvalidInc, senderID,
+		`UPDATE peers SET quality_score = quality_score + $1, quality_valid = quality_valid + $2, quality_invalid = quality_invalid + $3 WHERE key = $4`,
+		delta, qValidInc, qInvalidInc, senderKey,
 	); err != nil {
 		return model.ConfirmChunkResult{}, fmt.Errorf("update quality: %w", err)
 	}
@@ -284,16 +284,16 @@ func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkReques
 		var stmt string
 		switch s.driver {
 		case "pgx":
-			stmt = `UPDATE chunks SET confirmed = 1, updated_at = extract(epoch from now()) WHERE file_id = $1 AND chunk_index = $2 AND (recipient_id = $3 OR holder_peer_id = $3)`
+			stmt = `UPDATE chunks SET confirmed = 1, updated_at = extract(epoch from now()) WHERE file_id = $1 AND chunk_index = $2 AND recipient_id = $3`
 		case "sqlite":
-			stmt = `UPDATE chunks SET confirmed = 1, updated_at = unixepoch() WHERE file_id = $1 AND chunk_index = $2 AND (recipient_id = $3 OR holder_peer_id = $3)`
+			stmt = `UPDATE chunks SET confirmed = 1, updated_at = unixepoch() WHERE file_id = $1 AND chunk_index = $2 AND recipient_id = $3`
 		}
-		if _, err := s.db.ExecContext(ctx, stmt, fileID, req.ChunkIndex, recipientID); err != nil {
+		if _, err := s.db.ExecContext(ctx, stmt, fileID, req.ChunkIndex, recipientKey); err != nil {
 			return model.ConfirmChunkResult{}, fmt.Errorf("update confirmed: %w", err)
 		}
 	}
 
-	sender, err := s.getPeerByID(ctx, senderID)
+	senders, err := s.getPeerByKey(ctx, senderKey)
 	if err != nil {
 		return model.ConfirmChunkResult{}, fmt.Errorf("get updated peer: %w", err)
 	}
@@ -303,25 +303,25 @@ func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkReques
 		ExpectedHash:  expectedHash,
 		ConfirmedHash: confirmed,
 		Delta:         delta,
-		Peer:          sender,
+		Peer:          senders[0],
 	}, nil
 }
 
 func (s *dbStore) ReadChunk(ctx context.Context, req model.ReadChunkRequest) (model.ReadChunkResult, error) {
-	recipientID := strings.TrimSpace(req.RecipientID)
+	recipientKey := strings.TrimSpace(req.RecipientID)
 	fileID := strings.TrimSpace(req.FileID)
 
 	if fileID == "" || strings.TrimSpace(req.Signature) == "" {
 		return model.ReadChunkResult{}, ErrInvalidChunk
 	}
 
-	recipient, err := s.getPeerByID(ctx, recipientID)
+	recipients, err := s.getPeerByKey(ctx, recipientKey)
 	if err != nil {
 		return model.ReadChunkResult{}, ErrNotFound
 	}
 
 	msg := sign.ReadPayload(fileID)
-	if err := verifyPeerSignature(recipient, req.Signature, msg); err != nil {
+	if err := verifyPeerSignature(recipients[0], req.Signature, msg); err != nil {
 		return model.ReadChunkResult{}, err
 	}
 
@@ -332,7 +332,7 @@ func (s *dbStore) ReadChunk(ctx context.Context, req model.ReadChunkRequest) (mo
 	case "sqlite":
 		readStmt = `UPDATE chunks SET readed = 1, updated_at = unixepoch() WHERE file_id = $1 AND recipient_id = $2`
 	}
-	if _, err := s.db.ExecContext(ctx, readStmt, fileID, recipientID); err != nil {
+	if _, err := s.db.ExecContext(ctx, readStmt, fileID, recipientKey); err != nil {
 		return model.ReadChunkResult{}, fmt.Errorf("update readed: %w", err)
 	}
 

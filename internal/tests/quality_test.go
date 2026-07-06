@@ -35,40 +35,41 @@ func TestChunkConfirmScoring(t *testing.T) {
 
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "sender", Addresses: []string{"10.0.0.1:9000"},
-		Keys:         []model.Key{{Login: "login-sender", Signature: "sig-sender"}},
-		SignatureKey: senderKeys.b64,
+		Login: "login-sender", SignatureKey: senderKeys.b64,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = s.Upsert(ctx, model.RegisterRequest{
 		ID: "receiver", Addresses: []string{"10.0.0.2:9000"},
-		Keys:         []model.Key{{Login: "login-receiver", Signature: "sig-receiver"}},
-		SignatureKey: receiverKeys.b64,
+		Login: "login-receiver", SignatureKey: receiverKeys.b64,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	sender, _ := s.Get(ctx, "sender")
+	receiver, _ := s.Get(ctx, "receiver")
 
 	const fileID = "file-abc"
 	const hash = "deadbeef01234567"
 
 	expectedMsg := sign.ExpectedPayload(fileID, 0, hash)
 	if err := s.SetChunkHash(ctx, fileID, 0, model.RegisterChunkRequest{
-		SenderID: "sender", RecipientID: "receiver", PeerID: "receiver",
+		SenderID: sender.Key, RecipientID: receiver.Key, PeerID: "receiver",
 		Hash: "DEADbeef01234567", Signature: sign.Sign(senderKeys.priv, expectedMsg),
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	chunks, _ := s.GetChunksByRecipient(ctx, "receiver", 0)
+	chunks, _ := s.GetChunksByRecipient(ctx, receiver.Key, 0)
 	if len(chunks) != 1 || chunks[0].Confirmed {
 		t.Fatalf("expected 1 unconfirmed chunk, got %+v", chunks)
 	}
 
 	confirmedMsg := sign.ConfirmedPayload(fileID, 0, hash)
 	ok, err := s.ConfirmChunk(ctx, model.ConfirmChunkRequest{
-		RecipientID: "receiver", FileID: fileID, ChunkIndex: 0, Hash: hash,
+		RecipientID: receiver.Key, FileID: fileID, ChunkIndex: 0, Hash: hash,
 		Signature: sign.Sign(receiverKeys.priv, confirmedMsg),
 	})
 	if err != nil || !ok.Valid || ok.Delta != store.QualityPointsValid {
@@ -76,17 +77,17 @@ func TestChunkConfirmScoring(t *testing.T) {
 	}
 	wantAfterValid := store.InitialQualityScore + store.QualityPointsValid
 	if ok.Peer.QualityScore != wantAfterValid || ok.Peer.Quality.ValidReports != 1 {
-		t.Fatalf("sender after valid: %+v", ok.Peer)
+		t.Fatalf("sender after valid: %+v, wanted: %d", ok.Peer, wantAfterValid)
 	}
 
-	chunks, _ = s.GetChunksByRecipient(ctx, "receiver", 0)
+	chunks, _ = s.GetChunksByRecipient(ctx, receiver.Key, 0)
 	if len(chunks) != 1 || !chunks[0].Confirmed {
 		t.Fatalf("expected 1 confirmed chunk, got %+v", chunks)
 	}
 
 	badMsg := sign.ConfirmedPayload(fileID, 0, "ffffffffffffffff")
 	bad, err := s.ConfirmChunk(ctx, model.ConfirmChunkRequest{
-		RecipientID: "receiver", FileID: fileID, ChunkIndex: 0, Hash: "ffffffffffffffff",
+		RecipientID: receiver.Key, FileID: fileID, ChunkIndex: 0, Hash: "ffffffffffffffff",
 		Signature: sign.Sign(receiverKeys.priv, badMsg),
 	})
 	if err != nil || bad.Valid || bad.Delta != store.QualityPointsInvalid {
@@ -112,27 +113,27 @@ func TestChunkQualityScoring(t *testing.T) {
 
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "sender", Addresses: []string{"10.0.0.1:9000"},
-		Keys:         []model.Key{{Login: "login-sender", Signature: "sig-sender"}},
-		SignatureKey: senderKeys.b64,
+		Login: "login-sender", SignatureKey: senderKeys.b64,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = s.Upsert(ctx, model.RegisterRequest{
 		ID: "seeder-1", Addresses: []string{"10.0.0.2:9000"},
-		Keys:         []model.Key{{Login: "login-seeder", Signature: "sig-seeder"}},
-		SignatureKey: receiverKeys.b64,
+		Login: "login-seeder", SignatureKey: receiverKeys.b64,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	sender, _ := s.Get(ctx, "sender")
 
 	const fileID = "file-abc"
 	const hash = "deadbeef01234567"
 
 	expectedMsg := sign.ExpectedPayload(fileID, 0, hash)
 	if err := s.SetChunkHash(ctx, fileID, 0, model.RegisterChunkRequest{
-		SenderID: "sender", RecipientID: "receiver", PeerID: "seeder-1",
+		SenderID: sender.Key, RecipientID: "receiver", PeerID: "seeder-1",
 		Hash: "DEADbeef01234567", Signature: sign.Sign(senderKeys.priv, expectedMsg),
 	}); err != nil {
 		t.Fatal(err)
@@ -177,8 +178,7 @@ func TestReportChunkUnknown(t *testing.T) {
 
 	_, _ = s.Upsert(ctx, model.RegisterRequest{
 		ID: "p", Addresses: []string{"1:1"},
-		Keys:         []model.Key{{Login: "login-p", Signature: "sig-p"}},
-		SignatureKey: receiverKeys.b64,
+		Login: "login-p", SignatureKey: receiverKeys.b64,
 	})
 
 	msg := sign.ReportedPayload("f", 0, "aaaaaaaaaaaaaaaa", "p")
@@ -198,13 +198,13 @@ func TestConfirmChunkUnknown(t *testing.T) {
 
 	_, _ = s.Upsert(ctx, model.RegisterRequest{
 		ID: "p", Addresses: []string{"1:1"},
-		Keys:         []model.Key{{Login: "login-p", Signature: "sig-p"}},
-		SignatureKey: receiverKeys.b64,
+		Login: "login-p", SignatureKey: receiverKeys.b64,
 	})
+	p, _ := s.Get(ctx, "p")
 
 	msg := sign.ConfirmedPayload("f", 0, "aaaaaaaaaaaaaaaa")
 	_, err := s.ConfirmChunk(ctx, model.ConfirmChunkRequest{
-		RecipientID: "p", FileID: "f", ChunkIndex: 0, Hash: "aaaaaaaaaaaaaaaa",
+		RecipientID: p.Key, FileID: "f", ChunkIndex: 0, Hash: "aaaaaaaaaaaaaaaa",
 		Signature: sign.Sign(receiverKeys.priv, msg),
 	})
 	if err != store.ErrChunkNotFound {
@@ -219,19 +219,20 @@ func TestPersistChunkFlag(t *testing.T) {
 	senderKeys := newTestKeys(t)
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "sender", Addresses: []string{"10.0.0.1:9000"},
-		Keys:         []model.Key{{Login: "login-sender", Signature: "sig-sender"}},
-		SignatureKey: senderKeys.b64,
+		Login: "login-sender", SignatureKey: senderKeys.b64,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	sender, _ := s.Get(ctx, "sender")
 
 	const fileID = "file-persist"
 	const hash = "deadbeef01234567"
 
 	expectedMsg := sign.ExpectedPayload(fileID, 0, hash)
 	err = s.SetChunkHash(ctx, fileID, 0, model.RegisterChunkRequest{
-		SenderID: "sender", RecipientID: "recipient", PeerID: "seeder",
+		SenderID: sender.Key, RecipientID: "recipient", PeerID: "seeder",
 		Hash: hash, Signature: sign.Sign(senderKeys.priv, expectedMsg),
 		Persist: true,
 	})
@@ -241,7 +242,7 @@ func TestPersistChunkFlag(t *testing.T) {
 
 	expectedMsg2 := sign.ExpectedPayload(fileID, 1, hash)
 	err = s.SetChunkHash(ctx, fileID, 1, model.RegisterChunkRequest{
-		SenderID: "sender", RecipientID: "recipient", PeerID: "seeder",
+		SenderID: sender.Key, RecipientID: "recipient", PeerID: "seeder",
 		Hash: hash, Signature: sign.Sign(senderKeys.priv, expectedMsg2),
 		Persist: false,
 	})
@@ -264,7 +265,7 @@ func TestPeerFlagThin(t *testing.T) {
 
 	peer, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "thin-peer", Addresses: []string{"10.0.0.1:9000"},
-		Keys:     []model.Key{{Login: "thin", Signature: "thin-sig"}},
+		Login: "thin", SignatureKey: "thin-sig",
 		PeerFlag: model.PeerFlagThin,
 	})
 	if err != nil {
@@ -285,7 +286,7 @@ func TestPeerFlagThick(t *testing.T) {
 
 	peer, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "thick-peer-2", Addresses: []string{"10.0.0.1:9000"},
-		Keys:     []model.Key{{Login: "thick-2", Signature: "tk2-sig"}},
+		Login: "thick-2", SignatureKey: "tk2-sig",
 		PeerFlag: model.PeerFlagThick,
 	})
 	if err != nil {
@@ -307,7 +308,7 @@ func TestPeerFlagThickNegativeSignPreserved(t *testing.T) {
 
 	peer, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "neg-thick", Addresses: []string{"10.0.0.1:9000"},
-		Keys:     []model.Key{{Login: "neg-thick", Signature: "nt-sig"}},
+		Login: "neg-thick", SignatureKey: "nt-sig",
 		PeerFlag: model.PeerFlagThick,
 	})
 	if err != nil {
@@ -330,7 +331,7 @@ func TestPeerFlagVeryThick(t *testing.T) {
 
 	peer, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "very-thick-peer", Addresses: []string{"10.0.0.1:9000"},
-		Keys:     []model.Key{{Login: "very-thick", Signature: "vt-sig"}},
+		Login: "very-thick", SignatureKey: "vt-sig",
 		PeerFlag: model.PeerFlagVeryThick,
 	})
 	if err != nil {
@@ -352,7 +353,7 @@ func TestPeerFlagAffectsGetBestPeersOrder(t *testing.T) {
 
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "no-flag", Addresses: []string{"10.0.0.1:9000"},
-		Keys: []model.Key{{Login: "no-flag", Signature: "nf-sig"}},
+		Login: "no-flag", SignatureKey: "nf-sig",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -360,7 +361,7 @@ func TestPeerFlagAffectsGetBestPeersOrder(t *testing.T) {
 
 	_, err = s.Upsert(ctx, model.RegisterRequest{
 		ID: "thick-peer", Addresses: []string{"10.0.0.1:9000"},
-		Keys:     []model.Key{{Login: "thick", Signature: "tk-sig"}},
+		Login: "thick", SignatureKey: "tk-sig",
 		PeerFlag: model.PeerFlagThick,
 	})
 	if err != nil {
@@ -369,7 +370,7 @@ func TestPeerFlagAffectsGetBestPeersOrder(t *testing.T) {
 
 	_, err = s.Upsert(ctx, model.RegisterRequest{
 		ID: "thin-peer", Addresses: []string{"10.0.0.1:9000"},
-		Keys:     []model.Key{{Login: "thin-2", Signature: "tn-sig"}},
+		Login: "thin-2", SignatureKey: "tn-sig",
 		PeerFlag: model.PeerFlagThin,
 	})
 	if err != nil {
@@ -397,18 +398,19 @@ func TestChunkPersistBatchEntry(t *testing.T) {
 	senderKeys := newTestKeys(t)
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "sender", Addresses: []string{"10.0.0.1:9000"},
-		Keys:         []model.Key{{Login: "login-batch", Signature: "sig-batch"}},
-		SignatureKey: senderKeys.b64,
+		Login: "login-batch", SignatureKey: senderKeys.b64,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	sender, _ := s.Get(ctx, "sender")
+
 	hash := "deadbeef01234567"
 	msg := sign.ExpectedPayload("f", 0, hash)
 
 	err = s.SetChunkHash(ctx, "f", 0, model.RegisterChunkRequest{
-		SenderID: "sender", RecipientID: "r", PeerID: "p",
+		SenderID: sender.Key, RecipientID: "r", PeerID: "p",
 		Hash: hash, Signature: sign.Sign(senderKeys.priv, msg),
 		Persist: true,
 	})
@@ -432,18 +434,19 @@ func TestChunkNonPersistDeleted(t *testing.T) {
 	senderKeys := newTestKeys(t)
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "sender", Addresses: []string{"10.0.0.1:9000"},
-		Keys:         []model.Key{{Login: "login-np", Signature: "sig-np"}},
-		SignatureKey: senderKeys.b64,
+		Login: "login-np", SignatureKey: senderKeys.b64,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	sender, _ := s.Get(ctx, "sender")
+
 	hash := "deadbeef01234567"
 	msg := sign.ExpectedPayload("f", 0, hash)
 
 	err = s.SetChunkHash(ctx, "f", 0, model.RegisterChunkRequest{
-		SenderID: "sender", RecipientID: "r", PeerID: "p",
+		SenderID: sender.Key, RecipientID: "r", PeerID: "p",
 		Hash: hash, Signature: sign.Sign(senderKeys.priv, msg),
 		Persist: false,
 	})
@@ -459,18 +462,19 @@ func TestChunkPersistSurvivesDelete(t *testing.T) {
 	senderKeys := newTestKeys(t)
 	_, err := s.Upsert(ctx, model.RegisterRequest{
 		ID: "sender", Addresses: []string{"10.0.0.1:9000"},
-		Keys:         []model.Key{{Login: "login-ps", Signature: "sig-ps"}},
-		SignatureKey: senderKeys.b64,
+		Login: "login-ps", SignatureKey: senderKeys.b64,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	sender, _ := s.Get(ctx, "sender")
+
 	hash := "deadbeef01234567"
 	msg := sign.ExpectedPayload("f", 0, hash)
 
 	err = s.SetChunkHash(ctx, "f", 0, model.RegisterChunkRequest{
-		SenderID: "sender", RecipientID: "r", PeerID: "p",
+		SenderID: sender.Key, RecipientID: "r", PeerID: "p",
 		Hash: hash, Signature: sign.Sign(senderKeys.priv, msg),
 		Persist: true,
 	})
@@ -486,12 +490,13 @@ func TestChunkInvalidSignature(t *testing.T) {
 
 	_, _ = s.Upsert(ctx, model.RegisterRequest{
 		ID: "sender", Addresses: []string{"1:1"},
-		Keys:         []model.Key{{Login: "login-sender", Signature: "sig-sender"}},
-		SignatureKey: keys.b64,
+		Login: "login-sender", SignatureKey: keys.b64,
 	})
 
+	sender, _ := s.Get(ctx, "sender")
+
 	err := s.SetChunkHash(ctx, "f", 0, model.RegisterChunkRequest{
-		SenderID: "sender", RecipientID: "receiver", PeerID: "p",
+		SenderID: sender.Key, RecipientID: "receiver", PeerID: "p",
 		Hash: "aaaaaaaaaaaaaaaa", Signature: "invalid",
 	})
 	if err != store.ErrInvalidSignature {

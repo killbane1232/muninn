@@ -57,7 +57,7 @@ func peerFlagExponent(flag model.PeerFlag) int {
 type Store interface {
 	Upsert(ctx context.Context, req model.RegisterRequest) (model.Peer, error)
 	Get(ctx context.Context, id string) (model.Peer, error)
-	GetByKey(ctx context.Context, login string, signature string) (model.Peer, error)
+	GetByKey(ctx context.Context, login string, signature string) ([]model.Peer, error)
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]model.Peer, error)
 	Heartbeat(ctx context.Context, id string, ttlSeconds int) (model.Peer, error)
