@@ -34,14 +34,6 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) (model.
 	if len(req.Addresses) == 0 {
 		return model.Peer{}, ErrInvalidPeer
 	}
-	existingPeers, err := s.GetByKey(ctx, login, sigKey)
-	if err == nil {
-		for _, p := range existingPeers {
-			if p.ID != id {
-				return model.Peer{}, ErrKeyTaken
-			}
-		}
-	}
 
 	ttl := req.TTLSeconds
 	if ttl <= 0 {
@@ -137,6 +129,7 @@ func (s *dbStore) getPeerByID(ctx context.Context, id string) (model.Peer, error
 	)
 	peer.PeerFlag = model.PeerFlag(peerFlag)
 	if err == sql.ErrNoRows {
+		log.Printf("get peer=%s not found", id)
 		return model.Peer{}, ErrNotFound
 	}
 	if err != nil {
@@ -157,6 +150,7 @@ func (s *dbStore) getPeerByID(ctx context.Context, id string) (model.Peer, error
 	peer.Quality = model.QualityStats{ValidReports: qValid, InvalidReports: qInvalid}
 
 	if s.isExpired(peer, time.Now().UTC()) {
+		log.Printf("get peer=%s not found", id)
 		return model.Peer{}, ErrNotFound
 	}
 
@@ -213,6 +207,7 @@ func (s *dbStore) getPeerByKey(ctx context.Context, key string) ([]model.Peer, e
 		out = append(out, peer)
 	}
 	if out == nil {
+		log.Printf("get by key peer=%s not found", key)
 		return nil, ErrNotFound
 	}
 	return out, nil
@@ -224,12 +219,13 @@ func (s *dbStore) GetByKey(ctx context.Context, login, signature string) ([]mode
 	if login == "" || signature == "" {
 		return nil, ErrInvalidKey
 	}
+	key := login + ":" + signature
 
 	rows, err := s.db.QueryContext(ctx,
-		SELECT + ` WHERE key = $1`, login + ":" + signature,
+		SELECT + ` WHERE key = $1`, key,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("query peers by key: %w", err)
+		return nil, fmt.Errorf("query peers by key %s: %w", key, err)
 	}
 	defer rows.Close()
 
@@ -269,6 +265,7 @@ func (s *dbStore) GetByKey(ctx context.Context, login, signature string) ([]mode
 		out = append(out, peer)
 	}
 	if out == nil {
+		log.Printf("get by key peer=%s not found", key)
 		return nil, ErrNotFound
 	}
 	return out, nil
@@ -292,6 +289,7 @@ func (s *dbStore) Delete(ctx context.Context, id string) error {
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
+		log.Printf("delete peer=%s not found", id)
 		return ErrNotFound
 	}
 
@@ -340,6 +338,7 @@ func (s *dbStore) Heartbeat(ctx context.Context, id string, ttlSeconds int) (mod
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
+		log.Printf("heartbeat peer=%s not found", id)
 		return model.Peer{}, ErrNotFound
 	}
 	return s.getPeerByID(ctx, id)

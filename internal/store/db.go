@@ -184,6 +184,7 @@ func (s *dbStore) ReportChunk(ctx context.Context, sourcePeerID string, req mode
 
 	reporter, err := s.getPeerByID(ctx, reporterID)
 	if err != nil {
+		log.Printf("report peer=%s not found", reporterID)
 		return model.ChunkReportResult{}, ErrNotFound
 	}
 
@@ -247,6 +248,7 @@ func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkReques
 
 	recipients, err := s.getPeerByKey(ctx, recipientKey)
 	if err != nil {
+		log.Printf("confirm peer=%s not found", recipientKey)
 		return model.ConfirmChunkResult{}, ErrNotFound
 	}
 
@@ -321,6 +323,7 @@ func (s *dbStore) ReadChunk(ctx context.Context, req model.ReadChunkRequest) (mo
 
 	recipients, err := s.getPeerByKey(ctx, recipientKey)
 	if err != nil {
+		log.Printf("read peer=%s not found", recipientKey)
 		return model.ReadChunkResult{}, ErrNotFound
 	}
 
