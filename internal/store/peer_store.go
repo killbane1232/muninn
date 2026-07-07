@@ -226,7 +226,7 @@ func (s *dbStore) GetByKey(ctx context.Context, login, signature string) ([]mode
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		SELECT + ` WHERE login = $1 AND signature_key = $2`, login, signature,
+		SELECT + ` WHERE key = $1`, login + ":" + signature,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query peers by key: %w", err)
