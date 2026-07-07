@@ -97,7 +97,7 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 		fileID, chunkIndex, hash, senderKey, recipientKey, peerID, persist, now, chunkTTL,
 	)
 	if err != nil {
-		log.Printf("set chunk hash: %w", err)
+		log.Printf("set chunk hash: %v", err)
 		return fmt.Errorf("set chunk hash: %w", err)
 	}
 	return nil
