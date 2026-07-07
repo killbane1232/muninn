@@ -59,7 +59,7 @@ func NewServer(cfg Config, st store.Store) *Server {
 	mux.HandleFunc("PUT /api/v1/files/{file_id}/chunks/{index}", pb.RegisterChunk)
 	mux.HandleFunc("POST /api/v1/files/{file_id}/chunks", pb.RegisterChunkBatch)
 	mux.HandleFunc("GET /api/v1/files/{file_id}/chunks", pb.GetChunksByFileID)
-	mux.HandleFunc("GET /api/v1/recipient/{recipient_id}/chunks", pb.GetChunksByRecipient)
+	mux.HandleFunc("GET /api/v1/recipient/chunks", pb.GetChunksByRecipient)
 	mux.HandleFunc("POST /api/v1/peers/{id}/signals", pb.SetSignal)
 	mux.HandleFunc("GET /api/v1/peers/{id}/signals", pb.PollSignals)
 	mux.HandleFunc("POST /api/v1/webrtc/bootstrap", rtc.Bootstrap)

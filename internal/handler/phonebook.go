@@ -245,7 +245,7 @@ func (h *Phonebook) ConfirmChunkBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Phonebook) GetChunksByRecipient(w http.ResponseWriter, r *http.Request) {
-	recipientID := r.PathValue("recipient_id")
+	recipientID := r.URL.Query().Get("recipient_id")
 	if recipientID == "" {
 		writeError(w, http.StatusBadRequest, "recipient_id required")
 		return
