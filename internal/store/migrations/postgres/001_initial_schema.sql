@@ -1,7 +1,6 @@
 CREATE TABLE IF NOT EXISTS peers (
     id TEXT PRIMARY KEY,
     key TEXT NOT NULL,
-    addresses TEXT NOT NULL,
     encryption_key TEXT NOT NULL DEFAULT '',
     signature_key TEXT NOT NULL DEFAULT '',
     metadata TEXT NOT NULL DEFAULT '{}',
