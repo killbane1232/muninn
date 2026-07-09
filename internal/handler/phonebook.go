@@ -37,7 +37,7 @@ func (h *Phonebook) Refresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	log.Printf("Registering %s", req.ID)
+	log.Printf("Refreshing %s", req.ID)
 
 	err := h.Store.Refresh(r.Context(), req)
 	if err != nil {
