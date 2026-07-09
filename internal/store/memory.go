@@ -16,11 +16,11 @@ const defaultTTL = 300
 
 // MemoryStore — потокобезопасное in-memory хранилище.
 type MemoryStore struct {
-	mu                sync.RWMutex
-	peers             map[string]model.Peer
-	logins            map[string][]string
-	chunks            []chunkRecordEntry
-	signals           map[string][]model.Signal
+	mu      sync.RWMutex
+	peers   map[string]model.Peer
+	logins  map[string][]string
+	chunks  []chunkRecordEntry
+	signals map[string][]model.Signal
 }
 
 type chunkRecordEntry struct {
@@ -45,16 +45,11 @@ func NewMemory() *MemoryStore {
 	}
 }
 
-func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (model.Peer, error) {
+func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) error {
 	id := strings.TrimSpace(req.ID)
 	if id == "" {
-		return model.Peer{}, ErrInvalidPeer
+		return ErrInvalidPeer
 	}
-	if len(req.Addresses) == 0 {
-		return model.Peer{}, ErrInvalidPeer
-	}
-
-	key := strings.TrimSpace(req.Login)+":"+strings.TrimSpace(req.SignatureKey)
 
 	ttl := req.TTLSeconds
 	if ttl <= 0 {
@@ -64,11 +59,9 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 	now := time.Now().UTC()
 	peer := model.Peer{
 		ID:            id,
-		Key:           key,
-		Addresses:     copyStrings(req.Addresses),
+		Login:         strings.TrimSpace(req.Login),
 		EncryptionKey: strings.TrimSpace(req.EncryptionKey),
 		SignatureKey:  strings.TrimSpace(req.SignatureKey),
-		Metadata:      copyMetadata(req.Metadata),
 		LastSeen:      now,
 		TTLSeconds:    ttl,
 	}
@@ -86,7 +79,7 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 		peer.Fake = existing.Fake
 		peer.EncryptionKey = existing.EncryptionKey
 		peer.SignatureKey = existing.SignatureKey
-		s.logins[existing.Key] = removeID(s.logins[existing.Key], id)
+		s.logins[existing.Key()] = removeID(s.logins[existing.Key()], id)
 	} else {
 		peer.QualityScore = InitialQualityScore
 		peer.PeerFlag = req.PeerFlag
@@ -95,9 +88,25 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) (mode
 		}
 	}
 
-	s.logins[key] = append(s.logins[key], id)
+	s.logins[peer.Key()] = append(s.logins[peer.Key()], id)
 	s.peers[id] = peer
-	return peer, nil
+	return nil
+}
+
+func (s *MemoryStore) Refresh(_ context.Context, req model.RefreshRequest) error {
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		return ErrInvalidPeer
+	}
+	key := req.Login + ":" + req.SignatureKey
+
+	if existing, ok := s.peers[id]; ok {
+		now := time.Now().UTC()
+		existing.LastSeen = now
+		s.logins[key] = append(s.logins[key], id)
+		s.peers[id] = existing
+	}
+	return nil
 }
 
 func (s *MemoryStore) Get(_ context.Context, id string) (model.Peer, error) {
@@ -121,7 +130,7 @@ func (s *MemoryStore) GetByKey(_ context.Context, login string, signature string
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	ids, ok := s.logins[login + ":" + signature]
+	ids, ok := s.logins[login+":"+signature]
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -148,7 +157,7 @@ func (s *MemoryStore) Delete(_ context.Context, id string) error {
 	if !ok {
 		return ErrNotFound
 	}
-	s.logins[peer.Key] = removeID(s.logins[peer.Key], id)
+	s.logins[peer.Key()] = removeID(s.logins[peer.Key()], id)
 	delete(s.peers, id)
 	return nil
 }
@@ -517,17 +526,6 @@ func parseChunkKey(key string) (string, int) {
 	return parts[0], idx
 }
 
-func copyMetadata(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
 func (s *MemoryStore) SetSignal(_ context.Context, peerID string, sig model.Signal) error {
 	peerID = strings.TrimSpace(peerID)
 	if peerID == "" || sig.From == "" || sig.Type == "" {
@@ -628,7 +626,7 @@ func removeID(ids []string, id string) []string {
 
 func (s *MemoryStore) peerByKey(key string) (model.Peer, bool) {
 	for _, peer := range s.peers {
-		if peer.Key == key && !s.isExpired(peer, time.Now().UTC()) {
+		if peer.Key() == key && !s.isExpired(peer, time.Now().UTC()) {
 			return peer, true
 		}
 	}

@@ -13,31 +13,36 @@ const (
 
 // Peer — запись в телефонной книге P2P-узла.
 type Peer struct {
-	ID            string            `json:"id"`
-	Key           string            `json:"key"`
-	Addresses     []string          `json:"addresses"`
-	PublicKey     string            `json:"public_key,omitempty"`
-	EncryptionKey string            `json:"encryption_key,omitempty"`
-	SignatureKey  string            `json:"signature_key,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
-	LastSeen      time.Time         `json:"last_seen"`
-	TTLSeconds    int               `json:"ttl_seconds"`
-	QualityScore  int               `json:"quality_score"`
-	Quality       QualityStats      `json:"quality"`
-	PeerFlag      PeerFlag          `json:"peer_flag,omitempty"`
-	Fake          bool              `json:"is_fake,omitempty"`
+	ID            string       `json:"id"`
+	Login         string       `json:"login"`
+	EncryptionKey string       `json:"encryption_key,omitempty"`
+	SignatureKey  string       `json:"signature_key,omitempty"`
+	LastSeen      time.Time    `json:"last_seen"`
+	TTLSeconds    int          `json:"ttl_seconds"`
+	QualityScore  int          `json:ignore`
+	Quality       QualityStats `json:ignore`
+	PeerFlag      PeerFlag     `json:"peer_flag,omitempty"`
+	Fake          bool         `json:"is_fake,omitempty"`
+}
+
+func (p Peer) Key() string {
+	return p.Login + ":" + p.SignatureKey
 }
 
 // RegisterRequest — тело запроса на регистрацию или обновление узла.
 type RegisterRequest struct {
-	ID            string            `json:"id"`
-	Login         string            `json:"login"`
-	Addresses     []string          `json:"addresses"`
-	PublicKey     string            `json:"public_key,omitempty"`
-	EncryptionKey string            `json:"encryption_key,omitempty"`
-	SignatureKey  string            `json:"signature_key,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
-	TTLSeconds    int               `json:"ttl_seconds,omitempty"`
-	PeerFlag      PeerFlag          `json:"peer_flag,omitempty"`
-	Fake          *bool             `json:"fake,omitempty"`
+	ID            string   `json:"id"`
+	Login         string   `json:"login"`
+	EncryptionKey string   `json:"encryption_key,omitempty"`
+	SignatureKey  string   `json:"signature_key,omitempty"`
+	TTLSeconds    int      `json:"ttl_seconds,omitempty"`
+	PeerFlag      PeerFlag `json:"peer_flag,omitempty"`
+	Fake          *bool    `json:"fake,omitempty"`
+}
+
+// RefreshRequest — тело запроса на обновление узла.
+type RefreshRequest struct {
+	ID           string `json:"id"`
+	Login        string `json:"login"`
+	SignatureKey string `json:"signature_key,omitempty"`
 }

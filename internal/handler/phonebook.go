@@ -3,9 +3,9 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
-	"log"
 
 	"github.com/killbane1232/muninn/internal/model"
 	"github.com/killbane1232/muninn/internal/store"
@@ -23,12 +23,28 @@ func (h *Phonebook) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("Registering %s", req.ID)
 
-	peer, err := h.Store.Upsert(r.Context(), req)
+	err := h.Store.Upsert(r.Context(), req)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, peer)
+	writeJSON(w, http.StatusOK, "")
+}
+
+func (h *Phonebook) Refresh(w http.ResponseWriter, r *http.Request) {
+	var req model.RefreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	log.Printf("Registering %s", req.ID)
+
+	err := h.Store.Refresh(r.Context(), req)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, "")
 }
 
 func (h *Phonebook) Get(w http.ResponseWriter, r *http.Request) {

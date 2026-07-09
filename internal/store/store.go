@@ -8,15 +8,15 @@ import (
 )
 
 var (
-	ErrNotFound           = errors.New("peer not found")
-	ErrInvalidPeer        = errors.New("invalid peer data")
-	ErrInvalidKey         = errors.New("invalid key")
-	ErrKeyTaken           = errors.New("login+signature pair already belongs to another peer")
-	ErrInvalidChunk       = errors.New("invalid chunk data")
-	ErrChunkNotFound      = errors.New("chunk hash not registered")
-	ErrInvalidSignature   = errors.New("invalid signature")
-	ErrNoSigningKey       = errors.New("peer has no signature key")
-	ErrNoPendingMessages  = errors.New("no pending messages for recipient")
+	ErrNotFound          = errors.New("peer not found")
+	ErrInvalidPeer       = errors.New("invalid peer data")
+	ErrInvalidKey        = errors.New("invalid key")
+	ErrKeyTaken          = errors.New("login+signature pair already belongs to another peer")
+	ErrInvalidChunk      = errors.New("invalid chunk data")
+	ErrChunkNotFound     = errors.New("chunk hash not registered")
+	ErrInvalidSignature  = errors.New("invalid signature")
+	ErrNoSigningKey      = errors.New("peer has no signature key")
+	ErrNoPendingMessages = errors.New("no pending messages for recipient")
 )
 
 const (
@@ -55,7 +55,8 @@ func peerFlagExponent(flag model.PeerFlag) int {
 
 // Store — хранилище телефонной книги.
 type Store interface {
-	Upsert(ctx context.Context, req model.RegisterRequest) (model.Peer, error)
+	Upsert(ctx context.Context, req model.RegisterRequest) error
+	Refresh(ctx context.Context, req model.RefreshRequest) error
 	Get(ctx context.Context, id string) (model.Peer, error)
 	GetByKey(ctx context.Context, login string, signature string) ([]model.Peer, error)
 	Delete(ctx context.Context, id string) error

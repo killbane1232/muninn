@@ -15,9 +15,9 @@ import (
 
 type Server struct {
 	*http.Server
-	RTC     *webrtc.Handler
-	store   store.Store
-	cfg     Config
+	RTC   *webrtc.Handler
+	store store.Store
+	cfg   Config
 }
 
 type Config struct {
@@ -47,6 +47,7 @@ func NewServer(cfg Config, st store.Store) *Server {
 	mux.HandleFunc("GET /health", pb.Health)
 	mux.HandleFunc("GET /api/v1/peers", pb.List)
 	mux.HandleFunc("POST /api/v1/peers", pb.Register)
+	mux.HandleFunc("PUT /api/v1/peers", pb.Refresh)
 	mux.HandleFunc("GET /api/v1/peers/{id}", pb.Get)
 	mux.HandleFunc("GET /api/v1/keys/{login}", pb.GetByKey)
 	mux.HandleFunc("GET /api/v1/peers/best/thick", pb.GetBestThickPeers)

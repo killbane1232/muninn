@@ -13,9 +13,8 @@ func TestLifecycle(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemory()
 
-	_, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "alice", Addresses: []string{"192.168.1.10:9000"},
-		Login: "login-alice", SignatureKey: "sig-alice",
+	err := s.Upsert(ctx, model.RegisterRequest{
+		ID: "alice", Login: "login-alice", SignatureKey: "sig-alice",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -46,9 +45,8 @@ func TestGetByKey(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemory()
 
-	_, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Login: "login-1", SignatureKey: "sig-1",
+	err := s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-1", Login: "login-1", SignatureKey: "sig-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -86,17 +84,15 @@ func TestKeyUniqueAcrossPeers(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemory()
 
-	_, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Login: "same-login", SignatureKey: "same-sig",
+	err := s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-1", Login: "same-login", SignatureKey: "same-sig",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-2", Addresses: []string{"10.0.0.2:1"},
-		Login: "same-login", SignatureKey: "same-sig",
+	err = s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-2", Login: "same-login", SignatureKey: "same-sig",
 	})
 	if err != nil {
 		t.Fatalf("expected ok, got %v", err)
@@ -115,28 +111,23 @@ func TestKeyReUpsertSamePeer(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemory()
 
-	_, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Login: "login-1", SignatureKey: "sig-1",
+	err := s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-1", Login: "login-1", SignatureKey: "sig-1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:2"},
-		Login: "login-1", SignatureKey: "sig-1",
+	err = s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-1", Login: "login-1", SignatureKey: "sig-1",
 	})
 	if err != nil {
 		t.Fatalf("same peer re-upsert with same key should succeed: %v", err)
 	}
 
-	peer, err := s.Get(ctx, "node-1")
+	_, err = s.Get(ctx, "node-1")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(peer.Addresses) != 1 || peer.Addresses[0] != "10.0.0.1:2" {
-		t.Fatalf("addresses not updated: %v", peer.Addresses)
 	}
 }
 
@@ -144,17 +135,15 @@ func TestMultipleKeysPerPeer(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemory()
 
-	_, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Login: "login-A", SignatureKey: "sig-A",
+	err := s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-1", Login: "login-A", SignatureKey: "sig-A",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Login: "login-B", SignatureKey: "sig-B",
+	err = s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-1", Login: "login-B", SignatureKey: "sig-B",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -164,40 +153,15 @@ func TestMultipleKeysPerPeer(t *testing.T) {
 		t.Fatal("got old key")
 	}
 
-	peers, err := s.GetByKey(ctx, "login-B", "sig-B")
+	if _, err := s.GetByKey(ctx, "login-B", "sig-B"); err != store.ErrNotFound {
+		t.Fatal("got new sign")
+	}
+	peers, err := s.GetByKey(ctx, "login-B", "sig-A")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("new key should resolve")
 	}
 	if len(peers) != 1 || peers[0].ID != "node-1" {
 		t.Fatalf("got %+v", peers)
-	}
-}
-
-func TestKeysReplacedOnReUpsert(t *testing.T) {
-	ctx := context.Background()
-	s := store.NewMemory()
-
-	_, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Login: "old-login", SignatureKey: "old-sig",})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Login: "new-login", SignatureKey: "new-sig",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := s.GetByKey(ctx, "old-login", "old-sig"); err != store.ErrNotFound {
-		t.Fatalf("old key should be gone, got %v", err)
-	}
-
-	if _, err := s.GetByKey(ctx, "new-login", "new-sig"); err != nil {
-		t.Fatalf("new key should resolve: %v", err)
 	}
 }
 
@@ -205,17 +169,15 @@ func TestKeyCollisionDifferentSignatures(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemory()
 
-	_, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-1", Addresses: []string{"10.0.0.1:1"},
-		Login: "same-login", SignatureKey: "sig-A",
+	err := s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-1", Login: "same-login", SignatureKey: "sig-A",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = s.Upsert(ctx, model.RegisterRequest{
-		ID: "node-2", Addresses: []string{"10.0.0.2:1"},
-		Login: "same-login", SignatureKey: "sig-B",
+	err = s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-2", Login: "same-login", SignatureKey: "sig-B",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -238,42 +200,14 @@ func TestKeyCollisionDifferentSignatures(t *testing.T) {
 	}
 }
 
-func TestInitialQualityScore(t *testing.T) {
-	ctx := context.Background()
-	s := store.NewMemory()
-
-	peer, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "new-peer", Addresses: []string{"10.0.0.1:1"},
-		Login: "login", SignatureKey: "sig",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if peer.QualityScore != store.InitialQualityScore {
-		t.Fatalf("got %d, want %d", peer.QualityScore, store.InitialQualityScore)
-	}
-
-	peer2, err := s.Upsert(ctx, model.RegisterRequest{
-		ID: "new-peer", Addresses: []string{"10.0.0.1:2"},
-		Login: "login", SignatureKey: "sig",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if peer2.QualityScore != store.InitialQualityScore {
-		t.Fatalf("re-upsert should preserve score, got %d", peer2.QualityScore)
-	}
-}
-
 func TestGetBestPeersCount(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemory()
 
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("peer-%d", i)
-		_, err := s.Upsert(ctx, model.RegisterRequest{
-			ID: id, Addresses: []string{"10.0.0.1:1"},
-			Login: fmt.Sprintf("login-%d", i), SignatureKey: fmt.Sprintf("sig-%d", i),
+		err := s.Upsert(ctx, model.RegisterRequest{
+			ID: id, Login: fmt.Sprintf("login-%d", i), SignatureKey: fmt.Sprintf("sig-%d", i),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -307,9 +241,8 @@ func TestGetBestPeersOrdered(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		id := fmt.Sprintf("peer-%d", i)
-		_, err := s.Upsert(ctx, model.RegisterRequest{
-			ID: id, Addresses: []string{"10.0.0.1:1"},
-			Login: fmt.Sprintf("login-%d", i), SignatureKey: fmt.Sprintf("sig-%d", i),
+		err := s.Upsert(ctx, model.RegisterRequest{
+			ID: id, Login: fmt.Sprintf("login-%d", i), SignatureKey: fmt.Sprintf("sig-%d", i),
 		})
 		if err != nil {
 			t.Fatal(err)
