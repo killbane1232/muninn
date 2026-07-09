@@ -77,7 +77,7 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) error {
 			id, key, encryption_key, signature_key, 
 			last_seen, ttl_seconds, quality_score, quality_valid, 
 			quality_invalid, peer_flag, is_fake)
-			 VALUES ($1, $12, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, 0))`,
+			 VALUES ($1, $11, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, 0))`,
 			id, encKey, sigKey, nowUnix, ttl,
 			InitialQualityScore, 0, 0, peerFlag, req.Fake, key,
 		)
