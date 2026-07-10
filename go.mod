@@ -3,8 +3,8 @@ module github.com/killbane1232/muninn
 go 1.25.0
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/pion/webrtc/v3 v3.3.6
 	modernc.org/sqlite v1.52.0
 )
 

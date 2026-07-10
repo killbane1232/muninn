@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	pion "github.com/pion/webrtc/v3"
-
 	"github.com/killbane1232/muninn/internal/handler"
 	"github.com/killbane1232/muninn/internal/store"
 	"github.com/killbane1232/muninn/internal/webrtc"
@@ -26,7 +24,6 @@ type Config struct {
 	WriteTimeout    time.Duration
 	ShutdownTimeout time.Duration
 	PurgeInterval   time.Duration
-	ICEServers      []pion.ICEServer
 }
 
 func DefaultConfig() Config {
@@ -41,7 +38,7 @@ func DefaultConfig() Config {
 
 func NewServer(cfg Config, st store.Store) *Server {
 	pb := &handler.Phonebook{Store: st}
-	rtc := webrtc.NewHandler(st, cfg.ICEServers)
+	rtc := webrtc.NewHandler(st)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", pb.Health)
@@ -63,8 +60,8 @@ func NewServer(cfg Config, st store.Store) *Server {
 	mux.HandleFunc("GET /api/v1/recipient/chunks", pb.GetChunksByRecipient)
 	mux.HandleFunc("POST /api/v1/peers/{id}/signals", pb.SetSignal)
 	mux.HandleFunc("GET /api/v1/peers/{id}/signals", pb.PollSignals)
-	mux.HandleFunc("POST /api/v1/webrtc/bootstrap", rtc.Bootstrap)
 	mux.HandleFunc("POST /api/v1/chunks/read", pb.ReadChunk)
+	mux.HandleFunc("/api/v1/ws", rtc.HandleWebSocket)
 
 	srv := &Server{
 		Server: &http.Server{

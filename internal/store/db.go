@@ -18,12 +18,12 @@ const driverPostgres = "postgres"
 const defaultChunkTTL = 86400
 
 var driverMap = map[string]string{
-	driverSQLite:  "sqlite",
+	driverSQLite:   "sqlite",
 	driverPostgres: "pgx",
 }
 
 var defaultDSN = map[string]string{
-	driverSQLite:  "file:muninn.db?cache=shared&_journal_mode=WAL",
+	driverSQLite:   "file:muninn.db?cache=shared&_journal_mode=WAL",
 	driverPostgres: "postgres://localhost:5432/muninn?sslmode=disable",
 }
 
@@ -405,6 +405,13 @@ func (s *dbStore) DeleteExpiredChunks(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("delete expired chunks: %w", err)
 	}
+	switch s.driver {
+	case "sqlite":
+		stmt = `DELETE FROM signals WHERE persist = 0 AND created_at + 5 < unixepoch()`
+	case "pgx":
+		stmt = `DELETE FROM signals WHERE persist = 0 AND created_at + 5 < extract(epoch from now())`
+	}
+	_, _ = s.db.ExecContext(ctx, stmt)
 	return result.RowsAffected()
 }
 

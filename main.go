@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -10,11 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	pion "github.com/pion/webrtc/v3"
-
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/killbane1232/muninn/internal/api"
 	"github.com/killbane1232/muninn/internal/store"
-	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
 
@@ -49,20 +46,6 @@ func main() {
 	default:
 		st = store.NewMemory()
 		log.Printf("using in-memory store")
-	}
-
-	if p := os.Getenv("MUNINN_ICE_SERVERS_PATH"); p != "" {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			log.Printf("read ice servers file: %v", err)
-		} else {
-			var ice []pion.ICEServer
-			if err := json.Unmarshal(data, &ice); err != nil {
-				log.Printf("invalid ice servers file: %v", err)
-			} else {
-				cfg.ICEServers = ice
-			}
-		}
 	}
 
 	srv := api.NewServer(cfg, st)

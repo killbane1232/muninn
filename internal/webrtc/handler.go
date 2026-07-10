@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"sync"
 
-	pion "github.com/pion/webrtc/v3"
+	"github.com/gorilla/websocket"
 
 	"github.com/killbane1232/muninn/internal/model"
 	"github.com/killbane1232/muninn/internal/store"
@@ -55,131 +55,67 @@ type IncomingSignal struct {
 	Data string `json:"data"`
 }
 
-type peerConn struct {
-	pc     *pion.PeerConnection
-	dc     *pion.DataChannel
-	peerID string
-}
-
 type Handler struct {
-	store  store.Store
-	mu     sync.RWMutex
-	peers  map[string]*peerConn
-	config pion.Configuration
+	mu       sync.RWMutex
+	store    store.Store
+	wsMu     sync.RWMutex
+	wsConns  map[string]*websocket.Conn
+	upgrader websocket.Upgrader
 }
 
-func NewHandler(st store.Store, iceServers []pion.ICEServer) *Handler {
-	if iceServers == nil {
-		iceServers = defaultICEServers()
-	}
+func NewHandler(st store.Store) *Handler {
 	return &Handler{
-		store: st,
-		peers: make(map[string]*peerConn),
-		config: pion.Configuration{
-			ICEServers: iceServers,
+		store:   st,
+		wsConns: make(map[string]*websocket.Conn),
+		upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool { return true },
 		},
 	}
 }
 
-func defaultICEServers() []pion.ICEServer {
-	return []pion.ICEServer{
-		{URLs: []string{"stun:stun.l.google.com:19302"}},
-		{URLs: []string{"stun:stun1.l.google.com:19302"}},
-		{URLs: []string{"stun:stun2.l.google.com:19302"}},
-		{URLs: []string{"stun:stun3.l.google.com:19302"}},
-		{URLs: []string{"stun:stun4.l.google.com:19302"}},
-		{URLs: []string{"stun:stun.ekiga.net"}},
-		{URLs: []string{"stun:stun.fwdnet.net"}},
-		{URLs: []string{"stun:stun01.sipphone.com"}},
-		{URLs: []string{"stun:stun.ideasip.com"}},
-		{URLs: []string{"stun:stun.iptel.org"}},
-		{URLs: []string{"stun:stun.rixtelecom.se"}},
-		{URLs: []string{"stun:stun.schlund.de"}},
-		{URLs: []string{"stun:stunserver.org"}},
-		{URLs: []string{"stun:stun.softjoys.com"}},
-		{URLs: []string{"stun:stun.voiparound.com"}},
-		{URLs: []string{"stun:stun.voipbuster.com"}},
-		{URLs: []string{"stun:stun.voipstunt.com"}},
-		{URLs: []string{"stun:stun.voxgratia.org"}},
-		{URLs: []string{"stun:stun.xten.com"}},
-		{URLs: []string{"stun:stun.rtc.yandex.net"}},
-	}
-}
-
-func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
-	peerID := r.Header.Get("X-Peer-ID")
-	if peerID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "X-Peer-ID header required"})
-		return
-	}
-
-	var offer pion.SessionDescription
-	if err := json.NewDecoder(r.Body).Decode(&offer); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid offer"})
-		return
-	}
-
-	answer, err := h.acceptConnection(peerID, offer)
+func (ts *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := ts.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("webrtc accept %s: %v", peerID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, answer)
-}
+	peerID := r.URL.Query().Get("peer_id")
 
-func (h *Handler) acceptConnection(peerID string, offer pion.SessionDescription) (*pion.SessionDescription, error) {
-	h.closePeer(peerID)
-
-	pc, err := pion.NewPeerConnection(h.config)
-	if err != nil {
-		return nil, fmt.Errorf("new pc: %w", err)
-	}
-
-	pc.OnDataChannel(func(dc *pion.DataChannel) {
-		p := &peerConn{pc: pc, dc: dc, peerID: peerID}
-
-		h.mu.Lock()
-		h.peers[peerID] = p
-		h.mu.Unlock()
-
-		dc.OnMessage(func(msg pion.DataChannelMessage) {
-			h.handleMessage(peerID, msg.Data)
-		})
-
-		dc.OnOpen(func() {
-			log.Printf("[webrtc] peer %s connected", peerID)
-		})
-	})
-
-	pc.OnConnectionStateChange(func(s pion.PeerConnectionState) {
-		if s == pion.PeerConnectionStateDisconnected ||
-			s == pion.PeerConnectionStateFailed ||
-			s == pion.PeerConnectionStateClosed {
-			h.closePeer(peerID)
-			log.Printf("[webrtc] peer %s disconnected (%s)", peerID, s)
+	ts.wsMu.Lock()
+	ts.wsConns[peerID] = conn
+	ts.wsMu.Unlock()
+	ts.mu.Lock()
+	signals, err := ts.store.PollSignals(context.Background(), peerID)
+	ts.mu.Unlock()
+	if err == nil {
+		for _, sig := range signals {
+			notif := map[string]any{
+				"method": "incoming_signal",
+				"params": map[string]string{
+					"from": sig.From,
+					"type": sig.Type,
+					"data": sig.Data,
+				},
+			}
+			notifData, _ := json.Marshal(notif)
+			conn.WriteMessage(websocket.TextMessage, notifData)
 		}
-	})
-
-	if err := pc.SetRemoteDescription(offer); err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("set remote desc: %w", err)
 	}
 
-	answer, err := pc.CreateAnswer(nil)
-	if err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("create answer: %w", err)
-	}
+	defer func() {
+		ts.wsMu.Lock()
+		delete(ts.wsConns, peerID)
+		ts.wsMu.Unlock()
+		conn.Close()
+	}()
 
-	if err := pc.SetLocalDescription(answer); err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("set local desc: %w", err)
+	for {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		ts.handleMessage(peerID, data)
 	}
-
-	<-pion.GatheringCompletePromise(pc)
-	return pc.LocalDescription(), nil
 }
 
 func (h *Handler) handleMessage(peerID string, data []byte) {
@@ -249,19 +185,18 @@ func (h *Handler) handleConnectToPeer(fromPeerID string, req rpcRequest) {
 }
 
 func (h *Handler) sendNotification(peerID, method string, params any) bool {
-	h.mu.RLock()
-	p, ok := h.peers[peerID]
-	h.mu.RUnlock()
+	h.wsMu.RLock()
+	p, ok := h.wsConns[peerID]
+	h.wsMu.RUnlock()
 
-	if !ok || p.dc == nil {
+	if !ok || p == nil {
 		return false
 	}
-
 	raw, _ := json.Marshal(params)
 	notif := rpcNotification{Method: method, Params: raw}
-	data, _ := json.Marshal(notif)
+	notifData, _ := json.Marshal(notif)
 
-	if err := p.dc.Send(data); err != nil {
+	if err := p.WriteMessage(websocket.TextMessage, notifData); err != nil {
 		log.Printf("[webrtc] send notification to %s: %v", peerID, err)
 		return false
 	}
@@ -271,49 +206,39 @@ func (h *Handler) sendNotification(peerID, method string, params any) bool {
 
 func (h *Handler) sendResult(peerID, reqID string) {
 	h.mu.RLock()
-	p, ok := h.peers[peerID]
+	p, ok := h.wsConns[peerID]
 	h.mu.RUnlock()
 
-	if !ok || p.dc == nil {
+	if !ok || p == nil {
 		return
 	}
 
 	resp := rpcResponse{ID: reqID, Result: json.RawMessage("{}")}
 	data, _ := json.Marshal(resp)
-	p.dc.Send(data)
+	p.WriteMessage(websocket.TextMessage, data)
 }
 
 func (h *Handler) sendError(peerID, reqID, errMsg string) {
 	h.mu.RLock()
-	p, ok := h.peers[peerID]
+	p, ok := h.wsConns[peerID]
 	h.mu.RUnlock()
 
-	if !ok || p.dc == nil {
+	if !ok || p == nil {
 		return
 	}
 
 	resp := rpcResponse{ID: reqID, Error: errMsg}
 	data, _ := json.Marshal(resp)
-	p.dc.Send(data)
-}
-
-func (h *Handler) closePeer(peerID string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if p, ok := h.peers[peerID]; ok {
-		p.pc.Close()
-		delete(h.peers, peerID)
-	}
+	p.WriteMessage(websocket.TextMessage, data)
 }
 
 func (h *Handler) CloseAll() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	for id, p := range h.peers {
-		p.pc.Close()
-		delete(h.peers, id)
+	for id, p := range h.wsConns {
+		p.Close()
+		delete(h.wsConns, id)
 	}
 }
 
