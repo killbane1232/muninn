@@ -192,6 +192,7 @@ func (h *Phonebook) RegisterChunkBatch(w http.ResponseWriter, r *http.Request) {
 			Signature:   entry.Signature,
 			PeerID:      entry.PeerID,
 			Persist:     entry.Persist,
+			TTL:         entry.TTL,
 		}
 		if err := h.Store.SetChunkHash(r.Context(), fileID, entry.ChunkIndex, chunkReq); err != nil {
 			writeStoreError(w, err)
