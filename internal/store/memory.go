@@ -77,8 +77,18 @@ func (s *MemoryStore) Upsert(_ context.Context, req model.RegisterRequest) error
 			peer.PeerFlag = req.PeerFlag
 		}
 		peer.Fake = existing.Fake
-		peer.EncryptionKey = existing.EncryptionKey
-		peer.SignatureKey = existing.SignatureKey
+		if req.Fake != nil {
+			peer.Fake = *req.Fake
+		}
+		if peer.Login == "" {
+			peer.Login = existing.Login
+		}
+		if peer.EncryptionKey == "" {
+			peer.EncryptionKey = existing.EncryptionKey
+		}
+		if peer.SignatureKey == "" {
+			peer.SignatureKey = existing.SignatureKey
+		}
 		s.logins[existing.Key()] = removeID(s.logins[existing.Key()], id)
 	} else {
 		peer.QualityScore = InitialQualityScore
@@ -98,14 +108,21 @@ func (s *MemoryStore) Refresh(_ context.Context, req model.RefreshRequest) error
 	if id == "" {
 		return ErrInvalidPeer
 	}
-	key := req.Login + ":" + req.SignatureKey
-
-	if existing, ok := s.peers[id]; ok {
-		now := time.Now().UTC()
-		existing.LastSeen = now
-		s.logins[key] = append(s.logins[key], id)
-		s.peers[id] = existing
+	login := strings.TrimSpace(req.Login)
+	signature := strings.TrimSpace(req.SignatureKey)
+	if login == "" || signature == "" {
+		return ErrInvalidKey
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.peers[id]
+	if !ok || existing.Login != login || existing.SignatureKey != signature {
+		return ErrNotFound
+	}
+	existing.LastSeen = time.Now().UTC()
+	s.peers[id] = existing
 	return nil
 }
 

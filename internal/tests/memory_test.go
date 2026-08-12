@@ -153,15 +153,38 @@ func TestMultipleKeysPerPeer(t *testing.T) {
 		t.Fatal("got old key")
 	}
 
-	if _, err := s.GetByKey(ctx, "login-B", "sig-B"); err != store.ErrNotFound {
-		t.Fatal("got new sign")
+	if _, err := s.GetByKey(ctx, "login-B", "sig-A"); err != store.ErrNotFound {
+		t.Fatal("got old signature after identity update")
 	}
-	peers, err := s.GetByKey(ctx, "login-B", "sig-A")
+	peers, err := s.GetByKey(ctx, "login-B", "sig-B")
 	if err != nil {
 		t.Fatal("new key should resolve")
 	}
 	if len(peers) != 1 || peers[0].ID != "node-1" {
 		t.Fatalf("got %+v", peers)
+	}
+}
+
+func TestRefreshRequiresExistingMatchingPeer(t *testing.T) {
+	ctx := context.Background()
+	s := store.NewMemory()
+	req := model.RefreshRequest{ID: "node-1", Login: "login-1", SignatureKey: "sig-1"}
+
+	if err := s.Refresh(ctx, req); err != store.ErrNotFound {
+		t.Fatalf("refresh missing peer: got %v, want %v", err, store.ErrNotFound)
+	}
+	if err := s.Upsert(ctx, model.RegisterRequest{
+		ID: "node-1", Login: "login-1", SignatureKey: "sig-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wrongKey := req
+	wrongKey.SignatureKey = "wrong-signature"
+	if err := s.Refresh(ctx, wrongKey); err != store.ErrNotFound {
+		t.Fatalf("refresh wrong identity: got %v, want %v", err, store.ErrNotFound)
+	}
+	if err := s.Refresh(ctx, req); err != nil {
+		t.Fatalf("refresh existing peer: %v", err)
 	}
 }
 
