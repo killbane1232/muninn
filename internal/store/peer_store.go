@@ -15,9 +15,9 @@ import (
 )
 
 var SELECT = `
-SELECT 
-id, key, encryption_key, signature_key, 
-last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid, 
+SELECT
+id, login, encryption_key, signature_key,
+last_seen, ttl_seconds, quality_score, quality_valid, quality_invalid,
 peer_flag, is_fake FROM peers
 `
 
@@ -48,11 +48,11 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) error {
 
 	var existingQualityScore int
 	var existingQualityValid, existingQualityInvalid int
-	var existingEncKey, existingSigKey string
+	var existingLogin, existingEncKey, existingSigKey string
 
 	err = tx.QueryRowContext(ctx,
-		`SELECT quality_score, quality_valid, quality_invalid, encryption_key, signature_key FROM peers WHERE id = $1`, id,
-	).Scan(&existingQualityScore, &existingQualityValid, &existingQualityInvalid, &existingEncKey, &existingSigKey)
+		`SELECT quality_score, quality_valid, quality_invalid, login, encryption_key, signature_key FROM peers WHERE id = $1`, id,
+	).Scan(&existingQualityScore, &existingQualityValid, &existingQualityInvalid, &existingLogin, &existingEncKey, &existingSigKey)
 
 	isNew := false
 	if err == sql.ErrNoRows {
@@ -68,6 +68,10 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) error {
 	if sigKey == "" {
 		sigKey = existingSigKey
 	}
+	if login == "" {
+		login = existingLogin
+	}
+	key = login + ":" + sigKey
 
 	peerFlag := string(req.PeerFlag)
 
@@ -82,14 +86,34 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) error {
 			InitialQualityScore, 0, 0, peerFlag, req.Fake, key, login,
 		)
 	} else {
-		_, err = tx.ExecContext(ctx,
-			`UPDATE peers SET
-				last_seen = $1,
-				ttl_seconds = $2,
-				peer_flag = CASE WHEN $4 = '' THEN peer_flag ELSE $4 END
-			 WHERE id = $3`,
-			nowUnix, ttl, id, peerFlag,
-		)
+		if req.Fake == nil {
+			_, err = tx.ExecContext(ctx,
+				`UPDATE peers SET
+					encryption_key = $1,
+					signature_key = $2,
+					login = $3,
+					key = $4,
+					last_seen = $5,
+					ttl_seconds = $6,
+					peer_flag = CASE WHEN $8 = '' THEN peer_flag ELSE $8 END
+				 WHERE id = $7`,
+				encKey, sigKey, login, key, nowUnix, ttl, id, peerFlag,
+			)
+		} else {
+			_, err = tx.ExecContext(ctx,
+				`UPDATE peers SET
+					encryption_key = $1,
+					signature_key = $2,
+					login = $3,
+					key = $4,
+					last_seen = $5,
+					ttl_seconds = $6,
+					peer_flag = CASE WHEN $8 = '' THEN peer_flag ELSE $8 END,
+					is_fake = $9
+				 WHERE id = $7`,
+				encKey, sigKey, login, key, nowUnix, ttl, id, peerFlag, *req.Fake,
+			)
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("upsert peer: %w", err)
@@ -106,33 +130,32 @@ func (s *dbStore) Refresh(ctx context.Context, req model.RefreshRequest) error {
 	id := strings.TrimSpace(req.ID)
 	sigKey := strings.TrimSpace(req.SignatureKey)
 	login := strings.TrimSpace(req.Login)
-	key := login + ":" + sigKey
 
 	if id == "" {
 		return ErrInvalidPeer
+	}
+	if login == "" || sigKey == "" {
+		return ErrInvalidKey
 	}
 
 	now := time.Now().UTC()
 	nowUnix := now.Unix()
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	_, err = tx.ExecContext(ctx,
+	result, err := s.db.ExecContext(ctx,
 		`UPDATE peers SET
-			last_seen = $1,
-			WHERE id = $2 and key = $3`,
-		nowUnix, id, key,
+			last_seen = $1
+		 WHERE id = $2 AND login = $3 AND signature_key = $4`,
+		nowUnix, id, login, sigKey,
 	)
 	if err != nil {
 		return fmt.Errorf("refresh peer: %w", err)
 	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("refresh peer rows affected: %w", err)
+	}
+	if updated == 0 {
+		return ErrNotFound
 	}
 
 	return nil
