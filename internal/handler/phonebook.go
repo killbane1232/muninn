@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -12,12 +13,13 @@ import (
 )
 
 type Phonebook struct {
-	Store store.Store
+	Store      store.Store
+	SendSignal func(context.Context, string, model.Signal) error
 }
 
 func (h *Phonebook) Register(w http.ResponseWriter, r *http.Request) {
 	var req model.RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -33,7 +35,7 @@ func (h *Phonebook) Register(w http.ResponseWriter, r *http.Request) {
 
 func (h *Phonebook) Refresh(w http.ResponseWriter, r *http.Request) {
 	var req model.RefreshRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -163,7 +165,7 @@ func (h *Phonebook) RegisterChunk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req model.RegisterChunkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -179,7 +181,7 @@ func (h *Phonebook) RegisterChunkBatch(w http.ResponseWriter, r *http.Request) {
 	fileID := r.PathValue("file_id")
 
 	var req model.RegisterChunkBatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -210,7 +212,7 @@ func (h *Phonebook) ReportChunk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req model.ChunkReportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -225,7 +227,7 @@ func (h *Phonebook) ReportChunk(w http.ResponseWriter, r *http.Request) {
 
 func (h *Phonebook) ConfirmChunk(w http.ResponseWriter, r *http.Request) {
 	var req model.ConfirmChunkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -240,7 +242,7 @@ func (h *Phonebook) ConfirmChunk(w http.ResponseWriter, r *http.Request) {
 
 func (h *Phonebook) ConfirmChunkBatch(w http.ResponseWriter, r *http.Request) {
 	var req model.ConfirmChunkBatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -306,7 +308,7 @@ func (h *Phonebook) GetChunksByFileID(w http.ResponseWriter, r *http.Request) {
 
 func (h *Phonebook) ReadChunk(w http.ResponseWriter, r *http.Request) {
 	var req model.ReadChunkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -326,11 +328,15 @@ func (h *Phonebook) SetSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var sig model.Signal
-	if err := json.NewDecoder(r.Body).Decode(&sig); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&sig); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	if err := h.Store.SetSignal(r.Context(), peerID, sig); err != nil {
+	send := h.SendSignal
+	if send == nil {
+		send = h.Store.SetSignal
+	}
+	if err := send(r.Context(), peerID, sig); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -384,6 +390,8 @@ func (h *Phonebook) Health(w http.ResponseWriter, _ *http.Request) {
 func writeStoreError(w http.ResponseWriter, err error) {
 	log.Printf("Store error %v", err)
 	switch {
+	case errors.Is(err, store.ErrUnavailable):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, store.ErrInvalidPeer), errors.Is(err, store.ErrInvalidKey), errors.Is(err, store.ErrKeyTaken), errors.Is(err, store.ErrInvalidChunk), errors.Is(err, store.ErrNoSigningKey):

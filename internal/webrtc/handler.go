@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -55,195 +55,168 @@ type IncomingSignal struct {
 	Data string `json:"data"`
 }
 
+type connection struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+func (c *connection) write(v any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	return c.conn.WriteJSON(v)
+}
+
 type Handler struct {
-	mu       sync.RWMutex
 	store    store.Store
 	wsMu     sync.RWMutex
-	wsConns  map[string]*websocket.Conn
+	wsConns  map[string]*connection
 	upgrader websocket.Upgrader
+	// RouteSignal is installed before serving; nil selects local delivery.
+	RouteSignal func(context.Context, string, model.Signal) error
+	PollSignals func(context.Context, string) ([]model.Signal, error)
 }
 
 func NewHandler(st store.Store) *Handler {
-	return &Handler{
-		store:   st,
-		wsConns: make(map[string]*websocket.Conn),
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
-		},
-	}
+	return &Handler{store: st, wsConns: make(map[string]*connection), upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
 }
-
-func (ts *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := ts.upgrader.Upgrade(w, r, nil)
+func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	peerID := r.URL.Query().Get("peer_id")
+	if peerID == "" {
+		http.Error(w, "peer_id required", http.StatusBadRequest)
+		return
+	}
+	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
-
-	peerID := r.URL.Query().Get("peer_id")
-
-	ts.wsMu.Lock()
-	ts.wsConns[peerID] = conn
-	ts.wsMu.Unlock()
-	ts.mu.Lock()
-	signals, err := ts.store.PollSignals(context.Background(), peerID)
-	ts.mu.Unlock()
+	conn.SetReadLimit(1 << 20)
+	c := &connection{conn: conn}
+	h.wsMu.Lock()
+	previous := h.wsConns[peerID]
+	h.wsConns[peerID] = c
+	// Pair queue draining with registration so a concurrent HTTP/mesh signal
+	// cannot be queued after this drain and remain stranded until reconnect.
+	poll := h.PollSignals
+	if poll == nil {
+		poll = h.store.PollSignals
+	}
+	signals, err := poll(r.Context(), peerID)
 	if err == nil {
 		for _, sig := range signals {
-			notif := map[string]any{
-				"method": "incoming_signal",
-				"params": map[string]string{
-					"from": sig.From,
-					"type": sig.Type,
-					"data": sig.Data,
-				},
+			if err := c.write(notification(sig)); err != nil {
+				_ = h.store.SetSignal(r.Context(), peerID, sig)
 			}
-			notifData, _ := json.Marshal(notif)
-			conn.WriteMessage(websocket.TextMessage, notifData)
 		}
 	}
-
+	h.wsMu.Unlock()
+	if previous != nil {
+		previous.conn.Close()
+	}
 	defer func() {
-		ts.wsMu.Lock()
-		delete(ts.wsConns, peerID)
-		ts.wsMu.Unlock()
+		h.wsMu.Lock()
+		if h.wsConns[peerID] == c {
+			delete(h.wsConns, peerID)
+		}
+		h.wsMu.Unlock()
 		conn.Close()
 	}()
-
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			return
 		}
-		ts.handleMessage(peerID, data)
+		h.handleMessage(r.Context(), peerID, data)
 	}
 }
+func notification(sig model.Signal) any {
+	return struct {
+		Method string       `json:"method"`
+		Params model.Signal `json:"params"`
+	}{rpcNotifyIncomingSignal, sig}
+}
 
-func (h *Handler) handleMessage(peerID string, data []byte) {
+// DeliverLocal never forwards to another Muninn. Mesh RPCs use this entry point.
+func (h *Handler) DeliverLocal(ctx context.Context, peerID string, sig model.Signal) error {
+	if peerID == "" || sig.From == "" || (sig.Type != "offer" && sig.Type != "answer" && sig.Type != "candidate") {
+		return store.ErrInvalidChunk
+	}
+	h.wsMu.RLock()
+	defer h.wsMu.RUnlock()
+	if c := h.wsConns[peerID]; c != nil {
+		if err := c.write(notification(sig)); err == nil {
+			return nil
+		}
+		c.conn.Close()
+	}
+	return h.store.SetSignal(ctx, peerID, sig)
+}
+func (h *Handler) handleMessage(ctx context.Context, peerID string, data []byte) {
 	var req rpcRequest
-	if err := json.Unmarshal(data, &req); err != nil || req.ID == "" || req.Method == "" {
+	if json.Unmarshal(data, &req) != nil || req.ID == "" || req.Method == "" {
 		return
 	}
-
+	var id string
+	var sig model.Signal
 	switch req.Method {
 	case rpcMethodSignalRelay:
-		h.handleSignalRelay(peerID, req)
+		var p SignalRelayRequest
+		if json.Unmarshal(req.Params, &p) != nil {
+			h.respond(peerID, req.ID, "invalid signal_relay params")
+			return
+		}
+		id = p.TargetID
+		sig = model.Signal{From: peerID, Type: p.Type, Data: p.Data}
 	case rpcMethodConnectToPeer:
-		h.handleConnectToPeer(peerID, req)
+		var p ConnectToPeerRequest
+		if json.Unmarshal(req.Params, &p) != nil {
+			h.respond(peerID, req.ID, "invalid connect_to_peer params")
+			return
+		}
+		id = p.TargetID
+		sig = model.Signal{From: peerID, Type: "offer", Data: p.Offer}
 	default:
-		h.sendError(peerID, req.ID, fmt.Sprintf("unknown method: %s", req.Method))
+		h.respond(peerID, req.ID, fmt.Sprintf("unknown method: %s", req.Method))
+		return
 	}
+	sender := h.RouteSignal
+	if sender == nil {
+		sender = h.DeliverLocal
+	}
+	if err := sender(ctx, id, sig); err != nil {
+		h.respond(peerID, req.ID, err.Error())
+		return
+	}
+	h.respond(peerID, req.ID, "")
 }
-
-func (h *Handler) handleSignalRelay(fromPeerID string, req rpcRequest) {
-	var params SignalRelayRequest
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		h.sendError(fromPeerID, req.ID, "invalid signal_relay params")
-		return
-	}
-
-	if h.sendNotification(params.TargetID, rpcNotifyIncomingSignal, IncomingSignal{
-		From: params.From,
-		Type: params.Type,
-		Data: params.Data,
-	}) {
-		h.sendResult(fromPeerID, req.ID)
-		return
-	}
-
-	sig := model.Signal{From: params.From, Type: params.Type, Data: params.Data}
-	if err := h.store.SetSignal(context.Background(), params.TargetID, sig); err != nil {
-		h.sendError(fromPeerID, req.ID, fmt.Sprintf("store signal: %v", err))
-		return
-	}
-
-	h.sendResult(fromPeerID, req.ID)
-}
-
-func (h *Handler) handleConnectToPeer(fromPeerID string, req rpcRequest) {
-	var params ConnectToPeerRequest
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		h.sendError(fromPeerID, req.ID, "invalid connect_to_peer params")
-		return
-	}
-
-	if h.sendNotification(params.TargetID, rpcNotifyIncomingSignal, IncomingSignal{
-		From: fromPeerID,
-		Type: "offer",
-		Data: params.Offer,
-	}) {
-		h.sendResult(fromPeerID, req.ID)
-		return
-	}
-
-	sig := model.Signal{From: fromPeerID, Type: "offer", Data: params.Offer}
-	if err := h.store.SetSignal(context.Background(), params.TargetID, sig); err != nil {
-		h.sendError(fromPeerID, req.ID, fmt.Sprintf("store signal: %v", err))
-		return
-	}
-
-	h.sendResult(fromPeerID, req.ID)
-}
-
-func (h *Handler) sendNotification(peerID, method string, params any) bool {
+func (h *Handler) respond(peerID, id, message string) {
 	h.wsMu.RLock()
-	p, ok := h.wsConns[peerID]
+	c := h.wsConns[peerID]
 	h.wsMu.RUnlock()
-
-	if !ok || p == nil {
-		return false
-	}
-	raw, _ := json.Marshal(params)
-	notif := rpcNotification{Method: method, Params: raw}
-	notifData, _ := json.Marshal(notif)
-
-	if err := p.WriteMessage(websocket.TextMessage, notifData); err != nil {
-		log.Printf("[webrtc] send notification to %s: %v", peerID, err)
-		return false
-	}
-
-	return true
-}
-
-func (h *Handler) sendResult(peerID, reqID string) {
-	h.mu.RLock()
-	p, ok := h.wsConns[peerID]
-	h.mu.RUnlock()
-
-	if !ok || p == nil {
+	if c == nil {
 		return
 	}
-
-	resp := rpcResponse{ID: reqID, Result: json.RawMessage("{}")}
-	data, _ := json.Marshal(resp)
-	p.WriteMessage(websocket.TextMessage, data)
-}
-
-func (h *Handler) sendError(peerID, reqID, errMsg string) {
-	h.mu.RLock()
-	p, ok := h.wsConns[peerID]
-	h.mu.RUnlock()
-
-	if !ok || p == nil {
-		return
+	response := rpcResponse{ID: id, Error: message}
+	if message == "" {
+		response.Result = json.RawMessage("{}")
 	}
-
-	resp := rpcResponse{ID: reqID, Error: errMsg}
-	data, _ := json.Marshal(resp)
-	p.WriteMessage(websocket.TextMessage, data)
+	_ = c.write(response)
 }
-
 func (h *Handler) CloseAll() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	for id, p := range h.wsConns {
-		p.Close()
+	h.wsMu.Lock()
+	defer h.wsMu.Unlock()
+	for id, c := range h.wsConns {
+		c.conn.Close()
 		delete(h.wsConns, id)
 	}
 }
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+// IsConnected is used by the mesh to find the current signaling home after a
+// client changes servers while the previous directory record is still alive.
+func (h *Handler) IsConnected(peerID string) bool {
+	h.wsMu.RLock()
+	defer h.wsMu.RUnlock()
+	return h.wsConns[peerID] != nil
 }

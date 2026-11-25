@@ -71,14 +71,14 @@ func (s *dbStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex in
 		return ErrInvalidChunk
 	}
 
-	senders, err := s.getPeerByKey(ctx, senderKey)
+	sender, err := signingUser(ctx, s, senderKey)
 	if err != nil {
 		log.Printf("peer=%s not found", senderKey)
 		return ErrNotFound
 	}
 
 	msg := sign.ExpectedPayload(fileID, chunkIndex, hash)
-	if err := verifyPeerSignature(senders[0], req.Signature, msg); err != nil {
+	if err := verifyPeerSignature(sender, req.Signature, msg); err != nil {
 		log.Printf("wrong signature on file=%s", fileID)
 		return err
 	}
@@ -182,7 +182,7 @@ func (s *dbStore) ReportChunk(ctx context.Context, sourcePeerID string, req mode
 		return model.ChunkReportResult{}, ErrInvalidChunk
 	}
 
-	reporter, err := s.getPeerByID(ctx, reporterID)
+	reporter, err := signingPeer(ctx, s, reporterID)
 	if err != nil {
 		log.Printf("report peer=%s not found", reporterID)
 		return model.ChunkReportResult{}, ErrNotFound
@@ -246,14 +246,14 @@ func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkReques
 		return model.ConfirmChunkResult{}, ErrInvalidChunk
 	}
 
-	recipients, err := s.getPeerByKey(ctx, recipientKey)
+	recipient, err := signingUser(ctx, s, recipientKey)
 	if err != nil {
 		log.Printf("confirm peer=%s not found", recipientKey)
 		return model.ConfirmChunkResult{}, ErrNotFound
 	}
 
 	msg := sign.ConfirmedPayload(fileID, req.ChunkIndex, confirmed)
-	if err := verifyPeerSignature(recipients[0], req.Signature, msg); err != nil {
+	if err := verifyPeerSignature(recipient, req.Signature, msg); err != nil {
 		return model.ConfirmChunkResult{}, err
 	}
 
@@ -269,37 +269,40 @@ func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkReques
 	}
 
 	valid := confirmed == expectedHash
-	delta := QualityPointsInvalid
-	qValidInc := 0
-	qInvalidInc := 0
-	if valid {
-		delta = QualityPointsValid
-		qValidInc = 1
-	} else {
-		qInvalidInc = 1
+	delta, qValidInc, qInvalidInc := QualityPointsInvalid, 0, 1
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.ConfirmChunkResult{}, err
 	}
-
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE peers SET quality_score = quality_score + $1, quality_valid = quality_valid + $2, quality_invalid = quality_invalid + $3 WHERE key = $4`,
-		delta, qValidInc, qInvalidInc, senderKey,
-	); err != nil {
-		return model.ConfirmChunkResult{}, fmt.Errorf("update quality: %w", err)
-	}
-
+	defer tx.Rollback()
 	if valid {
-		var stmt string
-		switch s.driver {
-		case "pgx":
-			stmt = `UPDATE chunks SET confirmed = 1, updated_at = extract(epoch from now()) WHERE file_id = $1 AND chunk_index = $2 AND recipient_id = $3`
-		case "sqlite":
-			stmt = `UPDATE chunks SET confirmed = 1, updated_at = unixepoch() WHERE file_id = $1 AND chunk_index = $2 AND recipient_id = $3`
-		}
-		if _, err := s.db.ExecContext(ctx, stmt, fileID, req.ChunkIndex, recipientKey); err != nil {
+		// Compare-and-set inside the quality transaction makes concurrent retries
+		// idempotent, including after a partially successful mesh fanout.
+		result, err := tx.ExecContext(ctx,
+			`UPDATE chunks SET confirmed = 1, updated_at = $1 WHERE file_id = $2 AND chunk_index = $3 AND recipient_id = $4 AND confirmed = 0`,
+			time.Now().Unix(), fileID, req.ChunkIndex, recipientKey)
+		if err != nil {
 			return model.ConfirmChunkResult{}, fmt.Errorf("update confirmed: %w", err)
 		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return model.ConfirmChunkResult{}, err
+		}
+		delta, qValidInc, qInvalidInc = 0, 0, 0
+		if n > 0 {
+			delta, qValidInc = QualityPointsValid, 1
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE peers SET quality_score = quality_score + $1, quality_valid = quality_valid + $2, quality_invalid = quality_invalid + $3 WHERE key = $4`,
+		delta, qValidInc, qInvalidInc, senderKey); err != nil {
+		return model.ConfirmChunkResult{}, fmt.Errorf("update quality: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ConfirmChunkResult{}, err
 	}
 
-	senders, err := s.getPeerByKey(ctx, senderKey)
+	sender, err := signingUser(ctx, s, senderKey)
 	if err != nil {
 		return model.ConfirmChunkResult{}, fmt.Errorf("get updated peer: %w", err)
 	}
@@ -309,7 +312,7 @@ func (s *dbStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkReques
 		ExpectedHash:  expectedHash,
 		ConfirmedHash: confirmed,
 		Delta:         delta,
-		Peer:          senders[0],
+		Peer:          sender,
 	}, nil
 }
 
@@ -321,26 +324,27 @@ func (s *dbStore) ReadChunk(ctx context.Context, req model.ReadChunkRequest) (mo
 		return model.ReadChunkResult{}, ErrInvalidChunk
 	}
 
-	recipients, err := s.getPeerByKey(ctx, recipientKey)
+	recipient, err := signingUser(ctx, s, recipientKey)
 	if err != nil {
 		log.Printf("read peer=%s not found", recipientKey)
 		return model.ReadChunkResult{}, ErrNotFound
 	}
 
 	msg := sign.ReadPayload(fileID)
-	if err := verifyPeerSignature(recipients[0], req.Signature, msg); err != nil {
+	if err := verifyPeerSignature(recipient, req.Signature, msg); err != nil {
 		return model.ReadChunkResult{}, err
 	}
 
-	var readStmt string
-	switch s.driver {
-	case "pgx":
-		readStmt = `UPDATE chunks SET readed = 1, updated_at = extract(epoch from now()) WHERE file_id = $1 AND recipient_id = $2`
-	case "sqlite":
-		readStmt = `UPDATE chunks SET readed = 1, updated_at = unixepoch() WHERE file_id = $1 AND recipient_id = $2`
-	}
-	if _, err := s.db.ExecContext(ctx, readStmt, fileID, recipientKey); err != nil {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE chunks SET readed = 1, updated_at = $1 WHERE file_id = $2 AND recipient_id = $3`,
+		time.Now().Unix(), fileID, recipientKey)
+	if err != nil {
 		return model.ReadChunkResult{}, fmt.Errorf("update readed: %w", err)
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return model.ReadChunkResult{}, err
+	} else if n == 0 {
+		return model.ReadChunkResult{}, ErrChunkNotFound
 	}
 
 	return model.ReadChunkResult{Valid: true}, nil
@@ -398,7 +402,7 @@ func (s *dbStore) DeleteExpiredChunks(ctx context.Context) (int64, error) {
 	switch s.driver {
 	case "sqlite":
 		stmt = `DELETE FROM chunks WHERE persist = 0 AND created_at + ttl < unixepoch()`
-	case "pgx":
+	case driverPostgres:
 		stmt = `DELETE FROM chunks WHERE persist = 0 AND created_at + ttl < extract(epoch from now())`
 	}
 	result, err := s.db.ExecContext(ctx, stmt)
@@ -408,7 +412,7 @@ func (s *dbStore) DeleteExpiredChunks(ctx context.Context) (int64, error) {
 	switch s.driver {
 	case "sqlite":
 		stmt = `DELETE FROM signals WHERE persist = 0 AND created_at + 5 < unixepoch()`
-	case "pgx":
+	case driverPostgres:
 		stmt = `DELETE FROM signals WHERE persist = 0 AND created_at + 5 < extract(epoch from now())`
 	}
 	_, _ = s.db.ExecContext(ctx, stmt)
