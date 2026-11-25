@@ -74,6 +74,12 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) error {
 	key = login + ":" + sigKey
 
 	peerFlag := string(req.PeerFlag)
+	// Both SQL backends store is_fake as INTEGER; pgx does not encode bools
+	// as int4. Keep nil handling below so omitted updates preserve the flag.
+	fake := 0
+	if req.Fake != nil && *req.Fake {
+		fake = 1
+	}
 
 	if isNew {
 		_, err = tx.ExecContext(ctx,
@@ -81,9 +87,9 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) error {
 			id, encryption_key, signature_key, 
 			last_seen, ttl_seconds, quality_score, quality_valid, 
 			quality_invalid, peer_flag, is_fake, key, login)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, 0), $11, $12)`,
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			id, encKey, sigKey, nowUnix, ttl,
-			InitialQualityScore, 0, 0, peerFlag, req.Fake, key, login,
+			InitialQualityScore, 0, 0, peerFlag, fake, key, login,
 		)
 	} else {
 		if req.Fake == nil {
@@ -111,7 +117,7 @@ func (s *dbStore) Upsert(ctx context.Context, req model.RegisterRequest) error {
 					peer_flag = CASE WHEN $8 = '' THEN peer_flag ELSE $8 END,
 					is_fake = $9
 				 WHERE id = $7`,
-				encKey, sigKey, login, key, nowUnix, ttl, id, peerFlag, *req.Fake,
+				encKey, sigKey, login, key, nowUnix, ttl, id, peerFlag, fake,
 			)
 		}
 	}

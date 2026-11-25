@@ -485,6 +485,11 @@ docker-compose.yml              Muninn + PostgreSQL + coturn
 GOCACHE=/tmp/huginmunin-muninn-go-cache go test ./...
 ```
 
+Для проверки SQL store с PostgreSQL задайте `MUNINN_TEST_POSTGRES_DSN`, указывающий
+на тестовую базу. Тест создаёт отдельную схему и удаляет её после завершения;
+пользователю базы нужны права на создание схем. В CI PostgreSQL 18 запускается
+автоматически. Без этой переменной PostgreSQL-проверка пропускается.
+
 После изменения API нужно синхронно обновить модели и client methods в
 `../huginn-messenger/internal/muninn` и
 `../huginn-messenger-flutter/src/huginn-messenger/internal/muninn` и запустить тесты в обоих
