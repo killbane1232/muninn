@@ -7,18 +7,22 @@ import (
 	"time"
 
 	"github.com/killbane1232/muninn/internal/handler"
+	"github.com/killbane1232/muninn/internal/mesh"
 	"github.com/killbane1232/muninn/internal/store"
 	"github.com/killbane1232/muninn/internal/webrtc"
 )
 
 type Server struct {
 	*http.Server
-	RTC   *webrtc.Handler
-	store store.Store
-	cfg   Config
+	RTC    *webrtc.Handler
+	Mesh   *mesh.Mesh
+	cancel context.CancelFunc
+	store  store.Store
+	cfg    Config
 }
 
 type Config struct {
+	Mesh            mesh.Config
 	Addr            string
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
@@ -36,11 +40,27 @@ func DefaultConfig() Config {
 	}
 }
 
-func NewServer(cfg Config, st store.Store) *Server {
-	pb := &handler.Phonebook{Store: st}
+func NewServer(cfg Config, st store.Store) (*Server, error) {
 	rtc := webrtc.NewHandler(st)
-
 	mux := http.NewServeMux()
+	var network *mesh.Mesh
+	var directory store.Store = st
+	if cfg.Mesh.Enabled {
+		var err error
+		network, err = mesh.New(cfg.Mesh, st, rtc.DeliverLocal)
+		if err != nil {
+			return nil, err
+		}
+		directory = network
+		network.RegisterRoutes(mux)
+		rtc.RouteSignal = network.SetSignal
+		network.SignalConnected = rtc.IsConnected
+		rtc.PollSignals = network.PollSignals
+	}
+	pb := &handler.Phonebook{Store: directory, SendSignal: rtc.DeliverLocal}
+	if network != nil {
+		pb.SendSignal = network.SetSignal
+	}
 	mux.HandleFunc("GET /health", pb.Health)
 	mux.HandleFunc("GET /api/v1/peers", pb.List)
 	mux.HandleFunc("POST /api/v1/peers", pb.Register)
@@ -71,23 +91,34 @@ func NewServer(cfg Config, st store.Store) *Server {
 			WriteTimeout: cfg.WriteTimeout,
 		},
 		RTC:   rtc,
+		Mesh:  network,
 		store: st,
 		cfg:   cfg,
 	}
 
-	srv.startChunkCleaner(cfg.PurgeInterval)
-	return srv
+	ctx, cancel := context.WithCancel(context.Background())
+	srv.cancel = cancel
+	if network != nil {
+		network.Start(ctx)
+	}
+	srv.startChunkCleaner(ctx, cfg.PurgeInterval)
+	return srv, nil
 }
 
-func (s *Server) startChunkCleaner(interval time.Duration) {
+func (s *Server) startChunkCleaner(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		return
 	}
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		for range ticker.C {
-			n, err := s.store.DeleteExpiredChunks(context.Background())
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			n, err := s.store.DeleteExpiredChunks(ctx)
 			if err != nil {
 				log.Printf("chunk cleanup: %v", err)
 			} else if n > 0 {
@@ -95,4 +126,13 @@ func (s *Server) startChunkCleaner(interval time.Duration) {
 			}
 		}
 	}()
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.cancel()
+	s.RTC.CloseAll()
+	if s.Mesh != nil {
+		s.Mesh.Close()
+	}
+	return s.Server.Shutdown(ctx)
 }

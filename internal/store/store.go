@@ -8,6 +8,7 @@ import (
 )
 
 var (
+	ErrUnavailable       = errors.New("mesh temporarily unavailable")
 	ErrNotFound          = errors.New("peer not found")
 	ErrInvalidPeer       = errors.New("invalid peer data")
 	ErrInvalidKey        = errors.New("invalid key")

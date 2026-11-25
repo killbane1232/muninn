@@ -255,7 +255,7 @@ func copyStrings(in []string) []string {
 	return out
 }
 
-func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex int, req model.RegisterChunkRequest) error {
+func (s *MemoryStore) SetChunkHash(ctx context.Context, fileID string, chunkIndex int, req model.RegisterChunkRequest) error {
 	fileID = strings.TrimSpace(fileID)
 	senderKey := strings.TrimSpace(req.SenderID)
 	recipientKey := strings.TrimSpace(req.RecipientID)
@@ -265,13 +265,12 @@ func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex 
 		return ErrInvalidChunk
 	}
 
+	sender, err := signingUser(ctx, s, senderKey)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	sender, ok := s.peerByKey(senderKey)
-	if !ok {
-		return ErrNotFound
-	}
 	msg := sign.ExpectedPayload(fileID, chunkIndex, hash)
 	if err := verifyPeerSignature(sender, req.Signature, msg); err != nil {
 		return err
@@ -298,7 +297,7 @@ func (s *MemoryStore) SetChunkHash(_ context.Context, fileID string, chunkIndex 
 	return nil
 }
 
-func (s *MemoryStore) ReportChunk(_ context.Context, sourcePeerID string, req model.ChunkReportRequest) (model.ChunkReportResult, error) {
+func (s *MemoryStore) ReportChunk(ctx context.Context, sourcePeerID string, req model.ChunkReportRequest) (model.ChunkReportResult, error) {
 	sourcePeerID = strings.TrimSpace(sourcePeerID)
 	reporterID := strings.TrimSpace(req.ReporterID)
 	fileID := strings.TrimSpace(req.FileID)
@@ -311,13 +310,12 @@ func (s *MemoryStore) ReportChunk(_ context.Context, sourcePeerID string, req mo
 
 	key := chunkKey(fileID, req.ChunkIndex)
 
+	reporter, err := signingPeer(ctx, s, reporterID)
+	if err != nil {
+		return model.ChunkReportResult{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	reporter, ok := s.peers[reporterID]
-	if !ok {
-		return model.ChunkReportResult{}, ErrNotFound
-	}
 	msg := sign.ReportedPayload(fileID, req.ChunkIndex, reported, sourcePeerID)
 	if err := verifyPeerSignature(reporter, req.Signature, msg); err != nil {
 		return model.ChunkReportResult{}, err
@@ -359,7 +357,7 @@ func (s *MemoryStore) ReportChunk(_ context.Context, sourcePeerID string, req mo
 	}, nil
 }
 
-func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequest) (model.ConfirmChunkResult, error) {
+func (s *MemoryStore) ConfirmChunk(ctx context.Context, req model.ConfirmChunkRequest) (model.ConfirmChunkResult, error) {
 	recipientKey := strings.TrimSpace(req.RecipientID)
 	fileID := strings.TrimSpace(req.FileID)
 	confirmed := normalizeHash(req.Hash)
@@ -371,13 +369,12 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 
 	key := chunkKey(fileID, req.ChunkIndex)
 
+	recipient, err := signingUser(ctx, s, recipientKey)
+	if err != nil {
+		return model.ConfirmChunkResult{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	recipient, ok := s.peerByKey(recipientKey)
-	if !ok {
-		return model.ConfirmChunkResult{}, ErrNotFound
-	}
 	msg := sign.ConfirmedPayload(fileID, req.ChunkIndex, confirmed)
 	if err := verifyPeerSignature(recipient, req.Signature, msg); err != nil {
 		return model.ConfirmChunkResult{}, err
@@ -395,22 +392,34 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 	}
 
 	senderPeer, ok := s.peerByKey(entry.SenderID)
-	if !ok {
+	if !ok && ctx.Value(resolverKey{}) == nil {
 		return model.ConfirmChunkResult{}, ErrNotFound
 	}
 
+	alreadyConfirmed := entry.Confirmed
 	valid := confirmed == entry.Hash
 	delta := QualityPointsInvalid
 	if valid {
 		delta = QualityPointsValid
-		senderPeer.Quality.ValidReports++
-		entry.Confirmed = true
-		entry.UpdatedAt = time.Now().Unix()
+		if !alreadyConfirmed {
+			senderPeer.Quality.ValidReports++
+		}
+		for i := range s.chunks {
+			if s.chunks[i].key == key && s.chunks[i].RecipientID == recipientKey && !s.chunks[i].Confirmed {
+				s.chunks[i].Confirmed = true
+				s.chunks[i].UpdatedAt = time.Now().Unix()
+			}
+		}
 	} else {
 		senderPeer.Quality.InvalidReports++
 	}
-	senderPeer.QualityScore += delta
-	s.peers[senderPeer.ID] = senderPeer
+	if alreadyConfirmed && valid {
+		delta = 0
+	}
+	if ok && delta != 0 {
+		senderPeer.QualityScore += delta
+		s.peers[senderPeer.ID] = senderPeer
+	}
 
 	return model.ConfirmChunkResult{
 		Valid:         valid,
@@ -421,7 +430,7 @@ func (s *MemoryStore) ConfirmChunk(_ context.Context, req model.ConfirmChunkRequ
 	}, nil
 }
 
-func (s *MemoryStore) ReadChunk(_ context.Context, req model.ReadChunkRequest) (model.ReadChunkResult, error) {
+func (s *MemoryStore) ReadChunk(ctx context.Context, req model.ReadChunkRequest) (model.ReadChunkResult, error) {
 	recipientKey := strings.TrimSpace(req.RecipientID)
 	fileID := strings.TrimSpace(req.FileID)
 
@@ -429,13 +438,12 @@ func (s *MemoryStore) ReadChunk(_ context.Context, req model.ReadChunkRequest) (
 		return model.ReadChunkResult{}, ErrInvalidChunk
 	}
 
+	recipient, err := signingUser(ctx, s, recipientKey)
+	if err != nil {
+		return model.ReadChunkResult{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	recipient, ok := s.peerByKey(recipientKey)
-	if !ok {
-		return model.ReadChunkResult{}, ErrNotFound
-	}
 
 	msg := sign.ReadPayload(fileID)
 	if err := verifyPeerSignature(recipient, req.Signature, msg); err != nil {

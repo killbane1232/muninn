@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "public_url": "https://muninn-a.example.org",
+  "mode": "closed",
+  "shared_secret": "REPLACE_WITH_THE_SAME_RANDOM_SECRET_ON_ALL_SERVERS",
+  "seeds": ["https://muninn-b.example.org"],
+  "state_file": "mesh-state.json",
+  "allow_private_networks": false,
+  "sync_interval_seconds": 30,
+  "request_timeout_seconds": 3,
+  "transit_timeout_seconds": 8,
+  "max_relay_hops": 3,
+  "max_nodes": 64
+}

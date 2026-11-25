@@ -11,6 +11,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/killbane1232/muninn/internal/api"
+	"github.com/killbane1232/muninn/internal/mesh"
 	"github.com/killbane1232/muninn/internal/store"
 	_ "modernc.org/sqlite"
 )
@@ -25,6 +26,14 @@ func main() {
 	if v := os.Getenv("MUNINN_PURGE_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.PurgeInterval = d
+		}
+	}
+
+	if path := os.Getenv("MUNINN_MESH_CONFIG"); path != "" {
+		var err error
+		cfg.Mesh, err = mesh.LoadConfig(path)
+		if err != nil {
+			log.Fatalf("mesh config: %v", err)
 		}
 	}
 
@@ -48,7 +57,10 @@ func main() {
 		log.Printf("using in-memory store")
 	}
 
-	srv := api.NewServer(cfg, st)
+	srv, err := api.NewServer(cfg, st)
+	if err != nil {
+		log.Fatalf("server config: %v", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

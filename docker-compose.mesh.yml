@@ -1,0 +1,11 @@
+# Set public_url/seeds in mesh.json; use /var/lib/muninn-mesh/nodes.json as state_file.
+# docker compose -f docker-compose.yml -f docker-compose.mesh.yml up --build
+services:
+  muninn:
+    environment:
+      MUNINN_MESH_CONFIG: /etc/muninn/mesh.json
+    volumes:
+      - ./mesh.json:/etc/muninn/mesh.json:ro
+      - meshdata:/var/lib/muninn-mesh
+volumes:
+  meshdata:
